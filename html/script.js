@@ -4223,7 +4223,7 @@ function getPhotoLink(ac) {
     if (jetphotoLinks) {
         if (ac.registration == null || ac.registration == "")
             return "";
-        return "<a class=\"link\" target=\"_blank\" href=\"https://www.jetphotos.com/photo/keyword/" + ac.registration.replace(/[^0-9a-z]/ig,'') + "\" rel=\"noreferrer\">Jetphotos</a>";
+        return "<a class=\"link\" target=\"_blank\" href=\"https://www.jetphotos.com/photo/keyword/" + ac.registration.replace(/[^0-9-a-z]/ig,'') + "\" rel=\"noreferrer\">Jetphotos</a>";
     } else if (flightawareLinks) {
         if (ac.registration == null || ac.registration == "")
             return "";
