@@ -2,22 +2,56 @@
 "use strict";
 
 let NBSP='\u00a0';
+let NNBSP='\u202f';
 let DEGREES='\u00b0'
+let ENDASH='\u2013';
 let UP_TRIANGLE='\u25b2'; // U+25B2 BLACK UP-POINTING TRIANGLE
 let DOWN_TRIANGLE='\u25bc'; // U+25BC BLACK DOWN-POINTING TRIANGLE
+let EM_QUAD = '\u2001';
 
 let TrackDirections = ["North","NE","East","SE","South","SW","West","NW"];
 let TrackDirectionArrows = ["\u21e7","\u2b00","\u21e8","\u2b02","\u21e9","\u2b03","\u21e6","\u2b01"];
 
 let UnitLabels = {
-	'altitude': { metric: "m", imperial: "ft", nautical: "ft"},
-	'speed': { metric: "km/h", imperial: "mph", nautical: "kt" },
-	'distance': { metric: "km", imperial: "mi", nautical: "NM" },
-	'verticalRate': { metric: "m/s", imperial: "ft/min", nautical: "ft/min" },
-	'distanceShort': {metric: "m", imperial: "ft", nautical: "m"}
+    'altitude': { metric: "m", imperial: "ft", nautical: "ft"},
+    'speed': { metric: "km/h", imperial: "mph", nautical: "kt" },
+    'distance': { metric: "km", imperial: "mi", nautical: "nmi" },
+    'verticalRate': { metric: "m/s", imperial: "ft/min", nautical: "ft/min" },
+    'distanceShort': { metric: "m", imperial: "ft", nautical: "m" }
+};
+
+let aircraftCategories = {
+    'A0': 'Unspecified powered aircraft',
+    'A1': `Light (< 15${NNBSP}500${NBSP}lb)`,
+    'A2': `Small (15${NNBSP}500 to 75${NNBSP}000${NBSP}lb)`,
+    'A3': `Large (75${NNBSP}000 to 300${NNBSP}000${NBSP}lb)`,
+    'A4': 'High Vortex Large(aircraft such as B-757)',
+    'A5': `Heavy (> 300${NNBSP}000${NBSP}lb)`,
+    'A6': `High Performance (> 5${NBSP}g acceleration and > 400${NBSP}kt)`,
+    'A7': 'Rotorcraft',
+    'B0': 'Unspecified unpowered aircraft or UAV or spacecraft',
+    'B1': 'Glider/sailplane',
+    'B2': 'Lighter-than-Air',
+    'B3': 'Parachutist/Skydiver',
+    'B4': 'Ultralight/hang-glider/paraglider',
+    'B6': 'Unmanned Aerial Vehicle',
+    'B7': 'Space/Trans-atmospheric vehicle',
+    'C0': 'Unspecified ground installation or vehicle',
+    'C1': `Surface Vehicle ${ENDASH} Emergency Vehicle`,
+    'C2': `Surface Vehicle ${ENDASH} Service Vehicle`,
+    'C3': 'Fixed Ground or Tethered Obstruction'
 };
 
 // formatting helpers
+
+function get_category_label(category) {
+    if (!category)
+        return '';
+    let label = aircraftCategories[category];
+    if (!label)
+        return '';
+    return label;
+}
 
 function get_unit_label(quantity, systemOfMeasurement) {
 	let labels = UnitLabels[quantity];
@@ -43,7 +77,7 @@ function format_track_long(track, rounded) {
 	}
 
 	let trackDir = Math.floor((360 + track % 360 + 22.5) / 45) % 8;
-	return  TrackDirections[trackDir] + ":" + NBSP + track.toFixed(rounded ? 0 : 1) + DEGREES;
+	return  TrackDirections[trackDir] + ":" + NNBSP + track.toFixed(rounded ? 0 : 1) + DEGREES;
 }
 function format_track_arrow(track) {
 	if (track == null){
@@ -55,25 +89,27 @@ function format_track_arrow(track) {
 }
 
 // alt in feet
-function format_altitude_brief(alt, vr, displayUnits) {
+function format_altitude_brief(alt, vr, displayUnits, withUnits) {
 	let alt_text;
 
 	if (alt == null){
-		return "";
+		return NBSP + '?' + NBSP;
 	} else if (alt === "ground"){
 		return "ground";
 	}
 
-	alt_text = Math.round(convert_altitude(alt, displayUnits)).toLocaleString() + NBSP;
+	alt_text = Math.round(convert_altitude(alt, displayUnits)).toString();
+    if (withUnits)
+        alt_text += NNBSP + get_unit_label("altitude", displayUnits);
 
 	// Vertical Rate Triangle
 	let verticalRateTriangle = "";
-	if (vr > 192){
+	if (vr > 245){
 		verticalRateTriangle = UP_TRIANGLE;
-	} else if (vr < -192){
+	} else if (vr < -245){
 		verticalRateTriangle = DOWN_TRIANGLE;
 	} else {
-		verticalRateTriangle = NBSP + NBSP + NBSP;
+		verticalRateTriangle = NNBSP;
 	}
 
 	return alt_text + verticalRateTriangle;
@@ -89,16 +125,32 @@ function format_altitude_long(alt, vr, displayUnits) {
 		return "on ground";
 	}
 
-	alt_text = Math.round(convert_altitude(alt, displayUnits)).toLocaleString() + NBSP + get_unit_label("altitude", displayUnits);
+	alt_text = Math.round(convert_altitude(alt, displayUnits)).toString() + NNBSP + get_unit_label("altitude", displayUnits);
 
 	if (vr > 192) {
-		return UP_TRIANGLE + NBSP + alt_text;
+		return UP_TRIANGLE + NNBSP + alt_text;
 	} else if (vr < -192) {
-		return DOWN_TRIANGLE + NBSP + alt_text;
+		return DOWN_TRIANGLE + NNBSP + alt_text;
 	} else {
 		return alt_text;
 	}
 }
+
+// alt in feet
+function format_altitude(alt, displayUnits) {
+	let alt_text = "";
+
+	if (alt == null) {
+		return "n/a";
+	} else if (alt === "ground") {
+		return "on ground";
+	}
+
+	alt_text = Math.round(convert_altitude(alt, displayUnits)).toString() + NNBSP + get_unit_label("altitude", displayUnits);
+
+    return alt_text;
+}
+
 
 // alt ground/airborne
 function format_onground (alt) {
@@ -114,19 +166,22 @@ function format_onground (alt) {
 // alt in feet
 function convert_altitude(alt, displayUnits) {
 	if (displayUnits === "metric") {
-		return alt / 3.2808;  // feet to meters
+		return alt * 0.3048;  // feet to meters
 	}
 
 	return alt;
 }
 
 // speed in knots
-function format_speed_brief(speed, displayUnits) {
+function format_speed_brief(speed, displayUnits, withUnits) {
 	if (speed == null || isNaN(speed)) {
 		return "";
 	}
+    let speed_text = Math.round(convert_speed(speed, displayUnits)).toString();
+    if (withUnits)
+        speed_text += NNBSP + get_unit_label("speed", displayUnits);
 
-	return Math.round(convert_speed(speed, displayUnits));
+	return speed_text;
 }
 
 // speed in knots
@@ -135,7 +190,7 @@ function format_speed_long(speed, displayUnits) {
 		return "n/a";
 	}
 
-	let speed_text = Math.round(convert_speed(speed, displayUnits)) + NBSP + get_unit_label("speed", displayUnits);
+	let speed_text = Math.round(convert_speed(speed, displayUnits)) + NNBSP + get_unit_label("speed", displayUnits);
 
 	return speed_text;
 }
@@ -171,7 +226,7 @@ function format_distance_long(dist, displayUnits, fixed) {
 		fixed = 1;
 	}
 
-	let dist_text = convert_distance(dist, displayUnits).toFixed(fixed) + NBSP + get_unit_label("distance", displayUnits);
+	let dist_text = convert_distance(dist, displayUnits).toFixed(fixed) + NNBSP + get_unit_label("distance", displayUnits);
 
 	return dist_text;
 }
@@ -181,7 +236,7 @@ function format_distance_short (dist, displayUnits) {
 		return "n/a";
 	}
 
-	let dist_text = Math.round(convert_distance_short(dist, displayUnits)) + NBSP + get_unit_label("distanceShort", displayUnits);
+	let dist_text = Math.round(convert_distance_short(dist, displayUnits)) + NNBSP + get_unit_label("distanceShort", displayUnits);
 
 	return dist_text;
 }
@@ -189,7 +244,7 @@ function format_distance_short (dist, displayUnits) {
 // dist in meters
 function convert_distance(dist, displayUnits) {
 	if (displayUnits === "metric") {
-		return (dist / 1000); // meters to kilometers
+		return (dist / 1000); // meters to kilometres
 	}
 	else if (displayUnits === "imperial") {
 		return (dist / 1609); // meters to miles
@@ -198,7 +253,7 @@ function convert_distance(dist, displayUnits) {
 }
 
 // dist in meters
-// converts meters to feet or just returns meters
+// converts meters to feet or just returns metres
 function convert_distance_short(dist, displayUnits) {
 	if (displayUnits === "imperial") {
 		return (dist / 0.3048); // meters to feet
@@ -221,7 +276,7 @@ function format_vert_rate_long(rate, displayUnits) {
 		return "n/a";
 	}
 
-	let rate_text = convert_vert_rate(rate, displayUnits).toFixed(displayUnits === "metric" ? 1 : 0) + NBSP + get_unit_label("verticalRate", displayUnits);
+	let rate_text = convert_vert_rate(rate, displayUnits).toFixed(displayUnits === "metric" ? 1 : 0) + NNBSP + get_unit_label("verticalRate", displayUnits);
 
 	return rate_text;
 }
@@ -237,7 +292,7 @@ function convert_vert_rate(rate, displayUnits) {
 
 // p is a [lon, lat] coordinate
 function format_latlng(p) {
-	return p[1].toFixed(3) + DEGREES + "," + NBSP + p[0].toFixed(3) + DEGREES;
+	return p[1].toFixed(3) + DEGREES + "," + NNBSP + p[0].toFixed(3) + DEGREES;
 }
 
 function format_data_source(source) {
@@ -345,12 +400,15 @@ function iOSVersion() {
 }
 
 function wqi(data) {
+    const INT32_MAX = 2147483647;
     const buffer = data.buffer;
-    let vals = new Uint32Array(data.buffer, 0, 8);
-    data.now = vals[0] / 1000 + vals[1] * 4294967.296;
-    let stride = vals[2];
-    data.global_ac_count_withpos = vals[3];
-    data.globeIndex = vals[4];
+    //console.log(buffer);
+    let u32 = new Uint32Array(data.buffer, 0, 11);
+    data.now = u32[0] / 1000 + u32[1] * 4294967.296;
+    //console.log(data.now);
+    let stride = u32[2];
+    data.global_ac_count_withpos = u32[3];
+    data.globeIndex = u32[4];
 
     let limits = new Int16Array(buffer, 20, 4);
     data.south =  limits[0];
@@ -358,11 +416,31 @@ function wqi(data) {
     data.north =  limits[2];
     data.east =  limits[3];
 
-    data.messages = vals[7];
+    data.messages = u32[7];
+
+    let s32 = new Int32Array(data.buffer, 0, stride / 4);
+    let receiver_lat = s32[8] / 1e6;
+    let receiver_lon = s32[9] / 1e6;
+
+    const binCraftVersion = u32[10];
+
+    if (receiver_lat != 0 && receiver_lon != 0) {
+        //console.log("receiver_lat: " + receiver_lat + " receiver_lon: " + receiver_lon);
+        let position = {
+            coords: {
+                latitude: receiver_lat,
+                longitude: receiver_lon,
+            },
+        };
+        if (receiver_lat != SiteLat || receiver_lon != SiteLon) {
+            onLocationChange(position);
+        }
+    }
 
     data.aircraft = [];
     for (let off = stride; off < buffer.byteLength; off += stride) {
         let ac = {}
+        let u32 = new Uint32Array(buffer, off, stride / 4);
         let s32 = new Int32Array(buffer, off, stride / 4);
         let u16 = new Uint16Array(buffer, off, stride / 2);
         let s16 = new Int16Array(buffer, off, stride / 2);
@@ -386,7 +464,12 @@ function wqi(data) {
         ac.nav_qnh = s16[14] / 10;
         ac.nav_heading = s16[15] / 90;
 
-        ac.squawk = u16[16].toString(16).padStart(4, '0');
+        const s = u16[16].toString(16).padStart(4, '0');
+        if (s[0] > '9') {
+            ac.squawk = String(parseInt(s[0], 16)) + s[1] + s[2] + s[3];
+        } else {
+            ac.squawk = s;
+        }
         ac.gs = s16[17] / 10;
         ac.mach = s16[18] / 1000;
         ac.roll = s16[19] / 100;
@@ -404,7 +487,12 @@ function wqi(data) {
         ac.tas = u16[28];
         ac.ias = u16[29];
         ac.rc  = u16[30];
-        ac.messages = u16[31];
+
+        if (globeIndex && binCraftVersion >= 20220916) {
+            ac.messageRate = u16[31] / 10;
+        } else {
+            ac.messages = u16[31];
+        }
 
         ac.category = u8[64] ? u8[64].toString(16).toUpperCase() : undefined;
         ac.nic      = u8[65];
@@ -448,9 +536,16 @@ function wqi(data) {
         for (let i = 92; u8[i] && i < 104; i++) {
             ac.r += String.fromCharCode(u8[i]);
         }
+        ac.receiverCount = u8[104];
+
         ac.rssi = 10 * Math.log(u8[105]*u8[105]/65025 + 1.125e-5)/Math.log(10);
 
-        ac.receiverCount = u8[104];
+        ac.extraFlags = u8[106];
+        ac.nogps = ac.extraFlags & 1;
+        if (ac.nogps && nogpsOnly && s32[3] != INT32_MAX) {
+            u8[73] |= 64;
+            u8[73] |= 16;
+        }
 
         // must come after the stuff above (validity bits)
 
@@ -460,15 +555,18 @@ function wqi(data) {
         ac.flight        = (u8[73] & 8)    ? ac.flight       : undefined;
         ac.alt_baro      = (u8[73] & 16)   ? ac.alt_baro     : undefined;
         ac.alt_geom      = (u8[73] & 32)   ? ac.alt_geom     : undefined;
+
         ac.lat           = (u8[73] & 64)   ? ac.lat          : undefined;
         ac.lon           = (u8[73] & 64)   ? ac.lon          : undefined;
         ac.seen_pos      = (u8[73] & 64)   ? ac.seen_pos     : undefined;
+
         ac.gs            = (u8[73] & 128)  ? ac.gs           : undefined;
 
         ac.ias           = (u8[74] & 1)    ? ac.ias          : undefined;
         ac.tas           = (u8[74] & 2)    ? ac.tas          : undefined;
         ac.mach          = (u8[74] & 4)    ? ac.mach         : undefined;
         ac.track         = (u8[74] & 8)    ? ac.track        : undefined;
+        ac.calc_track    = !(u8[74] & 8)   ? ac.track        : undefined;
         ac.track_rate    = (u8[74] & 16)   ? ac.track_rate   : undefined;
         ac.roll          = (u8[74] & 32)   ? ac.roll         : undefined;
         ac.mag_heading   = (u8[74] & 64)   ? ac.mag_heading  : undefined;
@@ -537,8 +635,60 @@ function wqi(data) {
         } else if (type4 == 'tisb') {
             ac.version = ac.tisb_version;
         }
+        if (stride == 112) {
+            ac.rId = u32[27].toString(16).padStart(8, '0');
+            //ac.rId = ac.rId.slice(0, 4) + '-' + ac.rId.slice(4);
+        }
 
         data.aircraft.push(ac);
     }
 }
 
+function ItemCache(maxItems) {
+    this.maxItems = maxItems;
+    this.items = {};
+    this.keys = [];
+}
+ItemCache.prototype.clear = function() {
+    this.items = {};
+    this.keys = [];
+}
+ItemCache.prototype.get = function(key) {
+    return this.items[key];
+}
+ItemCache.prototype.add = function(key, value) {
+
+    if (!(key in this.items)) {
+        this.keys.push(key);
+    }
+    this.items[key] = value;
+
+    if (this.maxItems && this.maxItems > 0) {
+        while (this.keys.length > this.maxItems) {
+            const key = this.keys.shift();
+            delete this.items[key];
+        }
+    }
+}
+
+function itemCacheTest() {
+    let a = new ItemCache(4);
+    a.add(8, 4);
+    a.add(5, 2);
+    a.add(4, 2);
+    a.add(3, 2);
+    a.add(1, 2);
+    a.add(1, 3);
+    a.add(1, 5);
+    let items = JSON.stringify(a.items)
+    let keys = JSON.stringify(a.keys);
+    const expectedItems = '{"1":5,"3":2,"4":2,"5":2}';
+    const expectedKeys = '[5,4,3,1]';
+    if (items != expectedItems || keys != expectedKeys || g.get(1) != 5) {
+        console.error(`ItemCache broken!`);
+        console.log(`got:      items: ${items} keys: ${keys}`);
+        console.log(`expected: items: ${expectedItems} keys: ${expectedKeys}`);
+    } else {
+        console.log(`ItemCache tested correctly!`);
+    }
+}

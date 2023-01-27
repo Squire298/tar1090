@@ -10,7 +10,7 @@
 //MessageRateInTitle = false;
 
 // -- Output Settings -------------------------------------
-// The DisplayUnits setting controls whether nautical (ft, NM, knots),
+// The DisplayUnits setting controls whether nautical (ft, nmi, kt),
 // metric (m, km, km/h) or imperial (ft, mi, mph) units are used in the
 // plane table and in the detailed plane info. Valid values are
 // "nautical", "metric", or "imperial".
@@ -47,6 +47,8 @@
 // actual_range_outline_width = 1.7;
 // actual_range_outline_dash = null; // null - solid line, [5, 5] - dashed line with 5 pixel lines and spaces in between
 
+// Enable / disable showing the actual range outline when first visiting the page
+// actual_range_show = true;
 
 // which map is displayed to new visitors
 // MapType_tar1090 = "carto_light_all";
@@ -70,6 +72,13 @@
 // only with bing key:
 // bing_aerial
 // bing_roads
+
+
+// default these overlays to on for visitors which haven't disabled them in the browser in a previous session
+// defaultOverlays = ['radolan', 'nexrad'];
+
+// change which product from DWD to use
+// dwdLayers = 'dwd:RX-Produkt';
 
 // Default map dim state, true or false.
 // MapDim = true;
@@ -189,6 +198,12 @@ BingMapsAPIKey = null;
 // This determines what is up, default is north (0 degrees)
 //mapOrientation = 0;
 
+// Use UTC for live labels
+// utcTimesLive = false;
+
+// Use UTC for historic labels
+// utcTimesHistoric = true;
+
 // Only display labels when zoomed in this far:
 //labelZoom = 8;
 //labelZoomGround = 12.5;
@@ -202,6 +217,8 @@ BingMapsAPIKey = null;
 // filterTISB = false;
 
 //flightawareLinks = false;
+//shareBaseUrl = 'https://globe.adsbexchange.com/';
+// planespottersLinks = false;
 
 // show links to various registration websites (not all countries)
 // registrationLinks = true;
@@ -230,6 +247,7 @@ BingMapsAPIKey = null;
 //squareMania = false;
 
 // Columns that have a // in front of them are shown.
+/* // remove this line to mofify columns (and the one at the end)
 HideCols = [
 	"#icao",
 //	"#flag",
@@ -249,11 +267,14 @@ HideCols = [
 	"#lon",
 	"#data_source",
 ]
+*/ // remove this line to modify columns (and the one at the start)
 
 // show aircraft pictures
 // showPictures = true;
-// get pictures from planespotter API
+// get pictures from planespotters.net
 // planespottersAPI = true;
+// get pictures from planespotting.be
+// planespottingAPI = true;
 
 // show a link to jetphotos, only works if planespottersAPI is disabled
 // jetphotoLinks = false;
@@ -266,6 +287,15 @@ HideCols = [
 // provide ZZZZ.png to be shown when the type is not known.
 // this feature is provided as is please don't expect tar1090's support for getting the pictures right.
 
+// labelsGeom = false; // labels: uses geometric altitude (WGS84 ellipsoid unless geomUseEGM is enabled
+// geomUseEGM = false; // use EGM96 for displaying geometric altitudes (extra load time!)
+
+// windLabelsSlim = false;
+// showLabelUnits = true;
+//
+// wideInfoBlock = false;
+// baseInfoBlockWidth = 200;
+
 //enableDWD = true;
 
 // Display only the last leg of a flight in globeIndex mode.
@@ -275,9 +305,18 @@ HideCols = [
 //
 //askLocation = false;  // requires https for geolocation (browsers require it)
 //
-//let filterMaxRange = 50; // don't show aircraft further than 50 nmi from the receiver
+//filterMaxRange = 50; // don't show aircraft further than 50 nmi from the receiver
 //
 //
+//darkModeDefault = true; // turn on dark mode by default (change in browser possible)
+//
+//
+//jaeroTimeout = 35 * 60; // in seconds
+
+//seenTimeout = 58; // in seconds
+//seenTimeoutMlat = 58; // in seconds
+
+//tableInView = false; // only show aircraft in current view (V button)
 
 /*
 tableColors = {
@@ -304,3 +343,9 @@ tableColors = {
     },
 };
 */
+
+
+// disableGeoLocation = false;
+
+// when data is available from both 1090 and 978, give some preference to the 978 data for up to X seconds old 978 data (set this to 15 or 30 for example)
+//prefer978 = 0;

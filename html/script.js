@@ -2,7 +2,11 @@
 // early.js takes care of getting some history files while the html page and
 // some javascript libraries are still loading, hopefully speeding up loading
 
+
 "use strict";
+
+g.planes        = {};
+g.planesOrdered = [];
 
 // Define our global variables
 let tabHidden = false;
@@ -11,6 +15,7 @@ let webglFeatures = new ol.source.Vector();
 let webglLayer;
 let OLMap = null;
 let OLProj = null;
+let OLProjExtent = null;
 let PlaneIconFeatures = new ol.source.Vector();
 let trailGroup = new ol.Collection();
 let siteCircleLayer;
@@ -27,8 +32,7 @@ let realHeat;
 let iconCache = {};
 let addToIconCache = [];
 let lineStyleCache = {};
-let Planes        = {};
-let PlanesOrdered = [];
+let replayPlanes = {};
 let PlaneFilter   = {};
 let SelectedPlane = null;
 let sp = null;
@@ -51,16 +55,14 @@ let uat_data = null;
 let enableLabels = false;
 let extendedLabels = 0;
 let mapIsVisible = true;
-let tableInView = false;
 let onlyMilitary = false;
 let onlySelected = false;
-let onlyDataSource = null;
 let debug = false;
 let debugJump = false;
 let jumpTo = null;
 let noMLAT = false;
 let noVanish = false;
-let filterTracks = false;
+let filterTracks = false; // altitude filter: don't filter planes but rather their tracks by altitude
 let refreshId = 0;
 let lastFetch = 0;
 let globeIndexNow = {};
@@ -71,6 +73,7 @@ let globeTableLimitBase = 80;
 let globeTableLimit = 80;
 let fetchCounter = 0;
 let lastGlobeExtent;
+let lastRenderExtent;
 let pendingFetches = 0;
 let firstFetch = true;
 let debugCounter = 0;
@@ -86,7 +89,6 @@ let showTraceWasIsolation = false;
 let showTraceTimestamp = null;
 let traceDate = null;
 let traceDateString = null;
-let traceDay = null;
 let traceOpts = {};
 let icaoParam = null;
 let globalScale = 1;
@@ -95,7 +97,7 @@ let iconScale = 1;
 let labelScale = 1;
 let newWidth = lineWidth;
 let SiteOverride = false;
-let airport = null;
+let onJumpInput = null;
 let labelFill = null;
 let blackFill = null;
 let labelStroke = null;
@@ -105,7 +107,6 @@ let legSel = -1;
 let geoMag = null;
 let solidT = false;
 let lastActive = new Date().getTime();
-let overrideMapType = null;
 let enableOverlays = [];
 let halloween = false;
 let noRegOnly = false;
@@ -114,21 +115,42 @@ let firstDraw = true;
 let darkerColors = false;
 let updateLocation = false;
 let autoselect = false;
+let nogpsOnly = false;
+let trace_hist_only = false;
+let traces_high_res = false;
+let show_rId = true;
+let labels_top = false;
+let lockDotCentered = false;
+let overrideMapType = null;
+let layerMoreContrast = false;
+let layerExtraDim = 0;
+let layerExtraContrast = 0;
+let shareFiltersParam = false;
+let lastRequestSize = 0;
+let lastRequestBox = '';
+let nextQuerySelected = 0;
+let enableDynamicCachebusting = false;
+let lastRefreshInt = 1000;
+
+let limitUpdates = -1;
 
 let infoBlockWidth = baseInfoBlockWidth;
 
-const renderBuffer = 45;
+const renderBuffer = 60;
 
 let shareLink = '';
 
-let onMobile = false;
 
-let CenterLat, CenterLon, ZoomLvl, ZoomLvlCache;
+let CenterLat = 0;
+let CenterLon = 0;
+let zoomLvl = 5;
+let zoomLvlCache;
 
 let TrackedAircraft = 0;
 let globeTrackedAircraft = 0;
 let TrackedAircraftPositions = 0;
 let TrackedHistorySize = 0;
+let aircraftShown = 0;
 
 let SitePosition = null;
 
@@ -137,7 +159,6 @@ let now = 0;
 let last = 0;
 let uat_now = 0;
 let uat_last = 0;
-let today = 0;
 let FetchPending = [];
 let FetchPendingUAT = null;
 
@@ -158,34 +179,21 @@ let badDotMlat;
 
 let showingReplayBar = false;
 
-// TAR1090 application object
-let TAR;
-TAR = (function (global, jQuery, TAR) {
-    return TAR;
-}(window, jQuery, TAR || {}));
-
-
 function processAircraft(ac, init, uat) {
     let isArray = Array.isArray(ac);
     let hex = isArray ? ac[0] : ac.hex;
 
-    // Do we already have this plane object in Planes?
-    // If not make it.
-
-    /*
-        if ( ac.messages < 2) {
-            return;
-        }
-        */
     if (icaoFilter && !icaoFilter.includes(hex))
         return;
 
-    if (uatNoTISB && uat && ac.type && ac.type.substring(0,4) == "tisb") {
+    if (uat && uatNoTISB && ac.type && ac.type.substring(0,4) == "tisb") {
         // drop non ADS-B planes from UAT (TIS-B)
         return;
     }
 
-    let plane = Planes[hex]
+    // Do we already have this plane object in g.planes?
+    // If not make it.
+    let plane = g.planes[hex]
 
     if (!plane) {
         plane = new PlaneObject(hex);
@@ -198,7 +206,7 @@ function processAircraft(ac, init, uat) {
         return;
 
     // Call the function update
-    if (globeIndex) {
+    if (globeIndex || replay) {
         if (!onlyMilitary || plane.military || (ac.dbFlags && ac.dbFlags & 1)) {
             plane.updateData(now, last, ac, init);
         } else {
@@ -206,13 +214,44 @@ function processAircraft(ac, init, uat) {
         }
         return;
     }
-    // don't use data if the position is more than 1 second older than the position we have
-    if (ac.seen_pos != null && plane.position_time > now - ac.seen_pos + 1)
+    if (uat_now == 0) {
+        plane.updateData(now, last, ac, init);
         return;
-    if (uat) {
-        if (plane.uat
-            || (ac.seen_pos < 2 && (plane.seen_pos > 4 || plane.dataSource == "mlat"))
-            || (plane.seen > 10 && ac.seen < 0.8 * plane.seen) || isNaN(plane.seen)
+    }
+
+    // UAT dual source stuff below
+
+    let newPos = ac.seen_pos;
+    if (newPos === undefined || isNaN(newPos)) {
+        newPos = 1000;
+    }
+    let oldPos = plane.seen_pos;
+    if (oldPos === undefined || isNaN(oldPos)) {
+        oldPos = 1000;
+    }
+    let newSeen = ac.seen;
+    if (newSeen === undefined || isNaN(newSeen)) {
+        newSeen = 1000;
+    }
+    let oldSeen = plane.seen;
+    if (oldSeen === undefined || isNaN(oldSeen)) {
+        oldSeen = 1000;
+    }
+
+    if (!uat) {
+        if (!plane.uat // plane isn't uat, new data isn't uat, accept immediately
+            || (prefer978 < 0 && newPos < -prefer978)
+            || (newPos < 2 && oldPos > 4 + prefer978)
+            || (oldPos > 60 && newSeen < 2 && oldSeen > 4 + prefer978)
+            || init) {
+            plane.uat = false;
+            plane.updateData(now, last, ac, init);
+        }
+    } else {
+        if (plane.uat // plane is uat, new data is uat, accept immediately
+            || (prefer978 > 0 && newPos < prefer978)
+            || (newPos < 2 && (oldPos > 4 - prefer978 || plane.dataSource == "mlat"))
+            || (oldPos > 60 && newSeen < 2 && oldSeen > 4 - prefer978)
             || init) {
             let tisb = Array.isArray(ac) ? (ac[7] == "tisb") : (ac.tisb != null && ac.tisb.indexOf("lat") >= 0);
             if (tisb && plane.dataSource == "adsb") {
@@ -222,17 +261,11 @@ function processAircraft(ac, init, uat) {
                 plane.updateData(uat_now, uat_last, ac, init);
             }
         }
-    } else {
-        if (!plane.uat
-            || (ac.seen_pos < 2 && plane.seen_pos > 4)
-            || (plane.seen > 10 && ac.seen < 0.8 * plane.seen) || isNaN(plane.seen)
-            || init) {
-            plane.uat = false;
-            plane.updateData(now, last, ac, init);
-        }
     }
 }
 
+let notNewCounter = 0;
+let backwardsCounter = 0;
 function processReceiverUpdate(data, init) {
     // update now and last
     let uat = data.uat_978;
@@ -242,45 +275,242 @@ function processReceiverUpdate(data, init) {
         uat_last = uat_now;
         uat_now = data.now;
     } else {
-        if (data.now <= now && !globeIndex && !uuid) {
-            if (data.now < now)
-                console.log('timestep backwards, ignoring data:' + now + ' -> ' + data.now);
+        if (uat_now && now - uat_now > 15) {
+            uat_now = now;
+        }
+        if (data.now <= now && !globeIndex) {
+            if (data.now < now) {
+                backwardsCounter++;
+                console.log('timestep backwards or the same, ignoring data:' + now + ' -> ' + data.now);
+                if (backwardsCounter >= 5) {
+                    backwardsCounter = 0;
+                    console.log('resetting all data now:' + now + ' -> ' + data.now);
+                    now = data.now;
+                    last = now - 1;
+                    reaper(1);
+                    enableDynamicCachebusting = true;
+                }
+            }
+            if (++notNewCounter > 2) {
+                // data.now is too old, possibly a caching issues
+                enableDynamicCachebusting = true;
+            }
             return;
         }
         if (data.now > now) {
+            notNewCounter = 0;
+            backwardsCounter = 0;
             last = now;
             now = data.now;
         }
     }
 
     if (globeIndex) {
-        if ((showGrid || localStorage['globeGrid'] == 'true')
+        if ((showGrid || loStore['globeGrid'] == 'true')
             && globeIndexNow[data.globeIndex] == null)
             drawTileBorder(data);
         globeTrackedAircraft = data.global_ac_count_withpos;
         globeIndexNow[data.globeIndex] = data.now;
     }
 
-    if (!uat && !init && !globeIndex)
+    if (!(uat || init || (globeIndex && adsbexchange))) {
         updateMessageRate(data);
+    }
 
     // Loop through all the planes in the data packet
-    for (let j=0; j < data.aircraft.length; j++)
+    for (let j=0; j < data.aircraft.length; j++) {
         processAircraft(data.aircraft[j], init, uat);
+    }
+}
+function fetchFail(jqxhr, status, error) {
+    pendingFetches--;
+    if (pendingFetches <= 0 && !tabHidden) {
+        triggerRefresh++;
+        checkMovement();
+    }
+    status = jqxhr.status;
+    if (jqxhr.readyState == 0) error = "Can't connect to server, check your network!";
+    let errText = status + (error ? (": " + error) : "");
+    console.log(jqxhr);
+    console.log(error);
+    if (status != 429 && status != '429') {
+        jQuery("#update_error_detail").text(errText);
+        jQuery("#update_error").css('display','block');
+        StaleReceiverCount++;
+    } else {
+        if (C429++ > 16) {
+            globeRateUpdate();
+            C429 = 0;
+        }
+    }
+}
+
+function fetchDone(data) {
+    pendingFetches--;
+    if (data == null) {
+        return;
+    }
+    if (zstd) {
+        let arr = new Uint8Array(data);
+        lastRequestSize = arr.byteLength;
+        let res;
+        try {
+            res = zstdDecode( arr, 0 );
+        } catch (e) {
+            let errText = e.message;
+            console.log(errText);
+            jQuery("#update_error_detail").text(errText);
+            jQuery("#update_error").css('display','block');
+            return;
+        }
+        let arrayBuffer = res.buffer
+        // return type is Uint8Array, wqi requires the ArrayBuffer
+        data = { buffer: arrayBuffer, };
+        wqi(data);
+    } else if (binCraft) {
+        lastRequestSize = data.byteLength / 2;
+        data = { buffer: data, };
+        wqi(data);
+    }
+    data.urlIndex = this.urlIndex;
+
+    if (!data.aircraft || !data.now) {
+        let error = data.error;
+        if (error) {
+            jQuery("#update_error_detail").text(error);
+            jQuery("#update_error").css('display','block');
+            StaleReceiverCount++;
+        }
+        return;
+    }
+
+    //console.time("Process " + data.globeIndex);
+    processReceiverUpdate(data);
+    //console.timeEnd("Process " + data.globeIndex);
+    data = null;
+
+    if (uat_data) {
+        processReceiverUpdate(uat_data);
+        uat_data = null;
+    }
+
+    if (pendingFetches <= 0 && !tabHidden) {
+        triggerRefresh++;
+        checkMovement();
+        if (firstFetch) {
+            firstFetch = false;
+            if (uuid) {
+                const ext = myExtent(OLMap.getView().calculateExtent(OLMap.getSize()));
+                let jump = true;
+                for (let i = 0; i < g.planesOrdered.length; ++i) {
+                    const plane = g.planesOrdered[i];
+                    if (plane.visible && inView(plane.position, ext)) {
+                        jump = false;
+                        break;
+                    }
+                }
+                if (jump) {
+                    followRandomPlane();
+                    deselectAllPlanes();
+                    OLMap.getView().setZoom(6);
+                }
+            }
+            checkRefresh();
+        }
+    }
+
+    if (fetchCalls == 1) { console.timeEnd("first fetch()"); };
+
+    if (!g.firstFetchDone) { afterFirstFetch(); };
+
+    // Check for stale receiver data
+    if (last == now && !globeIndex) {
+        StaleReceiverCount++;
+        if (StaleReceiverCount > 5) {
+            jQuery("#update_error_detail").text("The data from the server hasn't been updated in a while.");
+            jQuery("#update_error").css('display','block');
+        }
+    } else if (StaleReceiverCount > 0){
+        StaleReceiverCount = 0;
+        jQuery("#update_error").css('display','none');
+    }
+}
+
+function db_load_type_cache() {
+    jQuery.getJSON(databaseFolder + "/icao_aircraft_types2.js").done(function(typeLookupData) {
+        g.type_cache = typeLookupData;
+        for (let i in g.planesOrdered) {
+            g.planesOrdered[i].setTypeData();
+        }
+        refresh();
+    });
+}
+
+g.afterLoad = [];
+function runAfterLoad(func) {
+    if (g.firstFetchDone) {
+        func()
+    } else {
+        g.afterLoad.push(func);
+    }
+}
+
+function afterFirstFetch() {
+    if (g.firstFetchDone) { return; }
+
+    g.firstFetchDone = true;
+
+    setTimeout(() => {
+        console.time('afterFirstFetch');
+
+        let func;
+        while ((func = g.afterLoad.pop())) {
+            func();
+        }
+
+        geoMag = geoMagFactory(cof2Obj());
+
+        db_load_type_cache(); // this will do a refresh()
+
+        if (limitUpdates != 0) {
+            (typeof load_gt != 'undefined') && (load_gt) && (load_gt()) && (load_gt = null);
+            (typeof load_fi != 'undefined') && (load_fi) && (load_fi()) && (load_fi = null);
+            (typeof load_freestar != 'undefined') && (load_freestar) && (load_freestar()) && (load_freestar = null);
+        } else {
+            (typeof hide_freestar != 'undefined') && (hide_freestar) && (hide_freestar());
+        }
+
+        if (usp.has('screenshot')) {
+            clearIntervalTimers('silent');
+        }
+
+        console.timeEnd('afterFirstFetch');
+    }, 150);
 }
 
 let debugFetch = false;
+let C429 = 0;
+let fetchCalls = 0;
 function fetchData(options) {
     options = options || {};
-    if (heatmap || replay || showTrace || pTracks || !loadFinished)
-        return;
-    let currentTime = new Date().getTime();
-
-    if (!options.force && (currentTime - lastFetch < refreshInt() || pendingFetches > 0)) {
+    if (heatmap || replay || showTrace || pTracks || !loadFinished || inhibitFetch) {
         return;
     }
-    if (debugFetch)
+    let currentTime = new Date().getTime();
+
+    if (!options.force) {
+        if (
+            currentTime - lastFetch < refreshInt()
+            || pendingFetches > 0
+            || OLMap.getView().getInteracting()
+            || OLMap.getView().getAnimating()
+        ) {
+            return;
+        }
+    }
+    if (debugFetch) {
         console.log((currentTime - lastFetch)/1000);
+    }
     lastFetch = currentTime;
 
     FetchPending = [];
@@ -289,10 +519,15 @@ function fetchData(options) {
         return;
     }
 
-    pendingFetches = 1;
-
     //console.timeEnd("Starting Fetch");
     //console.time("Starting Fetch");
+
+    if (limitUpdates != -1 && fetchCalls > limitUpdates) {
+        return;
+    }
+    fetchCalls++;
+
+    if (fetchCalls == 1) { console.time("first fetch()"); };
 
     if (enable_uat) {
         FetchPendingUAT = jQuery.ajax({ url: 'chunks/978.json',
@@ -307,11 +542,50 @@ function fetchData(options) {
         });
     }
 
+    let suffix = zstd ? '.binCraft.zst' : (binCraft ? '.binCraft' : '.json');
+    if (enableDynamicCachebusting) {
+        suffix += `?${currentTime}`;
+    }
+
     let ac_url = [];
     if (uuid != null) {
         for (let i in uuid) {
             ac_url.push('uuid/?feed=' + uuid[i]);
         }
+    } else if (reApi) {
+        let url = 're-api/?' + (binCraft ? 'binCraft' : 'json');
+        url += zstd ? '&zstd' : '';
+        url += onlyMilitary ? '&filter_mil' : '';
+        lastRequestBox = requestBoxString();
+        if (icaoFilter) {
+            if (icaoFilter.length > 0) {
+                url += '&find_hex='
+                for (let k in icaoFilter) {
+                    url += icaoFilter[k] + ','
+                }
+                url = url.slice(0, -1); // remove trailing comma
+            }
+        } else if (onlySelected && SelPlanes.length > 0) {
+            url += '&find_hex='
+            for (let k in SelPlanes) {
+                url += SelPlanes[k].icao + ','
+            }
+            url = url.slice(0, -1); // remove trailing comma
+        } else  {
+            url += '&box=' + lastRequestBox;
+
+            if (SelPlanes.length > 0) {
+                url += '&find_hex='
+                for (let k in SelPlanes) {
+                    url += SelPlanes[k].icao + ','
+                }
+                url = url.slice(0, -1); // remove trailing comma
+            }
+        }
+
+        ac_url.push(url);
+        //console.log(url);
+
     } else if (globeIndex) {
         let indexes = globeIndexes();
         const ancient = (currentTime - 2 * refreshInt() / globeSimLoad * globeTilesViewCount) / 1000;
@@ -332,35 +606,32 @@ function fetchData(options) {
             return (globeIndexNow[x] - globeIndexNow[y]);
         });
 
-        if (binCraft && onlyMilitary && ZoomLvl < 5.5) {
-            ac_url.push('data/globeMil_42777.binCraft');
+        if (binCraft && onlyMilitary && zoomLvl < 5.5) {
+            ac_url.push('data/globeMil_42777' + suffix);
         } else {
 
             indexes = indexes.slice(0, globeSimLoad);
 
-            let suffix = binCraft ? '.binCraft' : '.json'
             let mid = (binCraft && onlyMilitary) ? 'Mil_' : '_';
             for (let i in indexes) {
                 ac_url.push('data/globe' + mid + indexes[i].toString().padStart(4, '0') + suffix);
             }
         }
-    } else if (binCraft) {
-        ac_url.push = 'data/aircraft.binCraft';
     } else {
-        ac_url.push = 'data/aircraft.json';
+        ac_url.push('data/aircraft' + suffix);
     }
 
-    pendingFetches = ac_url.length;
-    fetchCounter += pendingFetches;
+    pendingFetches += ac_url.length;
+    fetchCounter += ac_url.length;
 
     for (let i in ac_url) {
         //console.log(ac_url[i]);
         let req;
-        if (binCraft) {
+        if (binCraft || zstd) {
             req = jQuery.ajax({
                 url: `${ac_url[i]}`, method: 'GET',
                 xhr: arraybufferRequest,
-                timeout: 5000,
+                timeout: 15000,
                 urlIndex: i,
             });
         } else {
@@ -368,93 +639,14 @@ function fetchData(options) {
         }
         FetchPending.push(req);
 
-        req.done(function(data) {
-            if (data == null) {
-                return;
-            }
-            if (binCraft) {
-                data = { buffer: data, };
-                wqi(data);
-            }
-            data.urlIndex = this.urlIndex;
-
-            if (!data.aircraft || !data.now) {
-                let error = data.error;
-                if (error) {
-                    jQuery("#update_error_detail").text(error);
-                    jQuery("#update_error").css('display','block');
-                    StaleReceiverCount++;
-                }
-                return;
-            }
-
-            //console.time("Process " + data.globeIndex);
-            processReceiverUpdate(data);
-            //console.timeEnd("Process " + data.globeIndex);
-            data = null;
-
-            if (uat_data) {
-                processReceiverUpdate(uat_data);
-                uat_data = null;
-            }
-
-            pendingFetches--;
-            if (pendingFetches <= 0 && !tabHidden) {
-                triggerRefresh++;
-                checkMovement();
-                if (firstFetch) {
-                    firstFetch = false;
-                    if (uuid) {
-                        const ext = myExtent(OLMap.getView().calculateExtent(OLMap.getSize()));
-                        let jump = true;
-                        for (let i = 0; i < PlanesOrdered.length; ++i) {
-                            const plane = PlanesOrdered[i];
-                            if (plane.visible && inView(plane.position, ext)) {
-                                jump = false;
-                                break;
-                            }
-                        }
-                        if (jump) {
-                            followRandomPlane();
-                            deselectAllPlanes();
-                            OLMap.getView().setZoom(6);
-                        }
-                    }
-                    checkRefresh();
-                }
-            }
+        req
+            .done(fetchDone)
+            .fail(fetchFail);
+    }
 
 
-            // Check for stale receiver data
-            if (last == now && !globeIndex) {
-                StaleReceiverCount++;
-                if (StaleReceiverCount > 5) {
-                    jQuery("#update_error_detail").text("The data from the server hasn't been updated in a while.");
-                    jQuery("#update_error").css('display','block');
-                }
-            } else if (StaleReceiverCount > 0){
-                StaleReceiverCount = 0;
-                jQuery("#update_error").css('display','none');
-            }
-        });
-
-        req.fail(function(jqxhr, status, error) {
-            status = jqxhr.status;
-            if (jqxhr.readyState == 0) error = "Can't connect to server, check your network!";
-            let errText = status + (error ? (": " + error) : "");
-            console.log(jqxhr);
-            console.log(error);
-            if (status != 429 && status != '429') {
-                jQuery("#update_error_detail").text(errText);
-                jQuery("#update_error").css('display','block');
-                StaleReceiverCount++;
-            }
-            pendingFetches--;
-            if (pendingFetches <= 0 && !tabHidden) {
-                triggerRefresh++;
-                checkMovement();
-            }
-        });
+    if (now - lastReap > 60) {
+        reaper();
     }
 }
 
@@ -469,14 +661,25 @@ function initialize() {
     jQuery.when(configureReceiver, heatmapDefer).done(function() {
 
         if (receiverJson) {
+            if (receiverJson.trace_hist_only)
+                trace_hist_only = true;
+            if (receiverJson.json_trace_interval < 2)
+                traces_high_res = true;
             if (receiverJson.lat != null) {
                 SiteLat = receiverJson.lat;
                 SiteLon = receiverJson.lon;
+                SitePosition = [SiteLon, SiteLat];
                 DefaultCenterLat = receiverJson.lat;
                 DefaultCenterLon = receiverJson.lon;
             }
             if (receiverJson.jaeroTimeout) {
                 jaeroTimeout = receiverJson.jaeroTimeout * 60;
+            }
+
+
+            if (receiverJson.readsb) {
+                positionFilter = false;
+                altitudeFilter = false;
             }
         }
         configureReceiver = null;
@@ -485,13 +688,62 @@ function initialize() {
         initPage();
         initMap();
 
-        // Wait for history item downloads and append them to the buffer
-        push_history();
+        processQueryToggles();
 
-        jQuery.when(historyLoaded).done(function() {
-            startPage();
-        });
+        if (nHistoryItems) {
+            // Wait for history item downloads and append them to the buffer
+            push_history();
+            jQuery.when(historyLoaded).done(afterHistoryLoad);
+        } else {
+            afterHistoryLoad();
+        }
     });
+}
+function afterHistoryLoad() {
+    if (nHistoryItems) {
+        reaper();
+    }
+    if (!zstdDecode) {
+        startPage();
+    } else {
+        try {
+            zstddec.promise.then(function() {
+                startPage();
+            });
+        } catch (e) {
+            webAssemblyFail(e);
+            startPage();
+        }
+    }
+}
+
+
+
+function processQueryToggles() {
+    if (!usp.has('toggles')) {
+        return;
+    }
+    let todo;
+    try {
+        todo = usp.get('toggles').split(',');;
+    } catch (e) {
+        console.error(e);
+        return;
+    }
+    while (todo.length >= 2) {
+        let key = todo.shift();
+        let value = todo.shift();
+        let state = true;
+        if (value == 'false' || value == '0') {
+            state = false;
+        }
+        try {
+            toggles[key].toggle(state, "init");
+            console.log((state ? "Enabled" : "Disabled") + " setting: " + key);
+        } catch (e) {
+            console.error(e);
+        }
+    }
 }
 
 function replaySpeedChange(arg) {
@@ -505,23 +757,45 @@ function replaySpeedChange(arg) {
 
 function initPage() {
     let value;
-    onMobile = window.mobilecheck();
 
-    today = new Date().getDate();
+    if (uk_advisory) {
+
+        labels_top = true;
+        tempTrails = true;
+        tempTrailsTimeout = 45;
+        SiteCirclesDistances = new Array(5, 10, 20);
+        SiteCirclesLineDash = [5, 5];
+        SiteCirclesColors = ['#2b3436', '#2b3436', '#2b3436'];
+        defaultOverlays.push('uka_airports');
+        defaultOverlays.push('uka_airspaces');
+        defaultOverlays.push('uka_runways');
+        defaultOverlays.push('uka_shoreham');
+        MapType_tar1090 = 'carto_light_all';
+        lineWidth=4;
+        enableLabels=true;
+    }
+
+    if (usp.has('limitUpdates')) {
+        let tmp = parseInt(usp.get('limitUpdates'));
+        if (!isNaN(tmp))
+            limitUpdates = tmp;
+    }
+
+    if (usp.has('screenshot')) {
+        limitUpdates = 0;
+    }
 
     if (usp.has('nowebgl')) {
-        localStorage['webgl'] = "false";
+        loStore['webgl'] = "false";
     }
+
     if (usp.has('showGrid')) {
         showGrid = true;
-        localStorage['layer_site_pos'] = 'true';
+        loStore['layer_site_pos'] = 'true';
     }
 
     if (usp.has('halloween'))
         halloween = true;
-
-    if (usp.has('onlyDataSource'))
-        onlyDataSource = usp.get('onlyDataSource');
 
     if (usp.has('outlineWidth')) {
         let tmp = parseInt(usp.get('outlineWidth'));
@@ -548,29 +822,41 @@ function initPage() {
         onMobile = false;
 
     if (usp.has('hideSidebar'))
-        localStorage['sidebar_visible'] = "false";
+        loStore['sidebar_visible'] = "false";
     if (usp.has('sidebarWidth')) {
-        localStorage['sidebar_width'] = usp.get('sidebarWidth');
-        localStorage['sidebar_visible'] = "true";
+        loStore['sidebar_width'] = usp.get('sidebarWidth');
+        loStore['sidebar_visible'] = "true";
     }
 
     if (usp.has('SiteLat') && usp.has('SiteLon')) {
-        localStorage['SiteLat'] = usp.get('SiteLat');
-        localStorage['SiteLon'] = usp.get('SiteLon');
+        let lat = parseFloat(usp.get('SiteLat'));
+        let lon = parseFloat(usp.get('SiteLon'));
+        if (!isNaN(lat) && !isNaN(lon)) {
+            if (true || usp.has('SiteNosave')) {
+                SiteLat = CenterLat = DefaultCenterLat = lat;
+                SiteLon = CenterLon = DefaultCenterLon = lon;
+                SiteOverride = true;
+            } else {
+                loStore['SiteLat'] = lat;
+                loStore['SiteLon'] = lon;
+            }
+        }
     }
-    if (localStorage['SiteLat'] != null && localStorage['SiteLon'] != null) {
-        if (usp.has('SiteClear')
-            || isNaN(parseFloat(localStorage['SiteLat']))
-            || isNaN(parseFloat(localStorage['SiteLat']))) {
-            localStorage.removeItem('SiteLat');
-            localStorage.removeItem('SiteLon');
-        } else {
-            SiteLat = CenterLat = DefaultCenterLat = parseFloat(localStorage['SiteLat']);
-            SiteLon = CenterLon = DefaultCenterLon = parseFloat(localStorage['SiteLon']);
+    if (loStore['SiteLat'] != null && loStore['SiteLon'] != null) {
+        if (usp.has('SiteClear')) {
+            loStore.removeItem('SiteLat');
+            loStore.removeItem('SiteLon');
+        } else if (!usp.has('SiteNosave')) {
+            SiteLat = CenterLat = DefaultCenterLat = parseFloat(loStore['SiteLat']);
+            SiteLon = CenterLon = DefaultCenterLon = parseFloat(loStore['SiteLon']);
             SiteOverride = true;
         }
     }
 
+    if (usp.has('allTracks')) {
+        SelectedAllPlanes = true;
+        buttonActive('#T', SelectedAllPlanes);
+    }
     if (usp.has('tempTrails')) {
         tempTrails = true;
         let tmp = parseInt(usp.get('tempTrails'));
@@ -580,6 +866,11 @@ function initPage() {
     if (usp.has('squareMania')) {
         squareMania = true;
     }
+
+    if (usp.has('darkerColors')) {
+        darkerColors = true;
+    }
+
     if (usp.has('mapDim')) {
         let dim = parseFloat(usp.get('mapDim'));
         if (!isNaN(dim))
@@ -591,6 +882,9 @@ function initPage() {
 
     if (usp.has('noRegOnly'))
         noRegOnly = true;
+
+    if (usp.has('nogpsOnly') || usp.has('badgps'))
+        nogpsOnly = true;
 
     if (usp.has('mapContrast')) {
         let contrast = parseFloat(usp.get('mapContrast'));
@@ -609,14 +903,14 @@ function initPage() {
 
     if (value = usp.getFloat('iconScale')) {
         iconScale = value;
-    } else if (localStorage['iconScale'] != null) {
-        iconScale = localStorage['iconScale'];
+    } else if (loStore['iconScale'] != null) {
+        iconScale = loStore['iconScale'];
     }
 
     if (value = usp.getFloat('scale')) {
         userScale = value;
-    } else if (localStorage['userScale'] != null) {
-        userScale = localStorage['userScale'];
+    } else if (loStore['userScale'] != null) {
+        userScale = loStore['userScale'];
     }
 
     const slideBase = 0.6;
@@ -629,7 +923,7 @@ function initPage() {
             iconScale = Math.pow(ui.value, slideBase);
             checkScale();
             mapRefresh();
-            localStorage['iconScale'] = iconScale;
+            loStore['iconScale'] = iconScale;
         },
     });
 
@@ -642,7 +936,7 @@ function initPage() {
             userScale = Math.pow(ui.value, slideBase);
             checkScale();
             mapRefresh();
-            localStorage['userScale'] = userScale;
+            loStore['userScale'] = userScale;
 
             setGlobalScale(userScale);
         },
@@ -652,8 +946,13 @@ function initPage() {
     if (usp.has('hideButtons'))
         hideButtons = true;
 
-    if (usp.has('baseMap'))
+    if (usp.has('baseMap')) {
         overrideMapType = usp.get('baseMap');
+    }
+
+    if (usp.has('offlineMap')) {
+        overrideMapType = 'osm_tiles_offline';
+    }
 
     if (usp.has('overlays'))
         enableOverlays = usp.get('overlays').split(',');
@@ -673,10 +972,9 @@ function initPage() {
     }
     mapOrientation *= (Math.PI/180); // adjust to radians
 
-    if (usp.has('r')) {
-        let numbers = (usp.get('r') || "").split('-');
+    if (usp.has('r') || usp.has('replay')) {
+        let numbers = (usp.get('r') || usp.get('replay') || "").split(/(?:-|:)/);
         let ts = new Date();
-        ts.setUTCHours(ts.getUTCHours() - 1);
         if (numbers.length == 5) {
             ts.setUTCFullYear(numbers[0]);
             ts.setUTCMonth(numbers[1] - 1);
@@ -684,13 +982,42 @@ function initPage() {
             ts.setUTCHours(numbers[3]);
             ts.setUTCMinutes(numbers[4]);
         }
-
+        if (isNaN(ts)) {
+            ts = new Date();
+        }
+        console.log(ts);
         replay = replayDefaults(ts);
-        replay.playing = true;
     }
 
-    if (onMobile)
-        enableMouseover = false;
+    //Pulling filters from params
+    if (usp.has('filterAltMin')) {
+        const minAlt = usp.getInt('filterAltMin');
+        if (minAlt !== null)  {
+            PlaneFilter.minAltitude = minAlt;
+            PlaneFilter.enabled = true;
+            PlaneFilter.maxAltitude = 1000000;
+        }
+    }
+    if (usp.has('filterAltMax')) {
+        const maxAlt = usp.getInt('filterAltMax');
+        if (maxAlt !== null)  {
+            PlaneFilter.maxAltitude = maxAlt;
+            PlaneFilter.enabled = true;
+            if (PlaneFilter.minAltitude === undefined) {
+                PlaneFilter.minAltitude = -1000000;
+            }
+        }
+    }
+
+    if (usp.has('filterSources')) {
+        PlaneFilter.sources = usp.get('filterSources').split(',');
+        shareFiltersParam = true;
+    }
+    if (usp.has('filterDbFlag')) {
+        PlaneFilter.flagFilter = usp.get('filterDbFlag').split(',');
+        shareFiltersParam = true;
+    }
+
 
     if (false && iOSVersion() <= 12 && !('PointerEvent' in window)) {
         jQuery("#generic_error_detail").text("Enable Settings - Safari - Advanced - Experimental features - Pointer Events");
@@ -700,38 +1027,38 @@ function initPage() {
         }, 30000);
     }
 
-    if (localStorage['enableLabels'] == 'true' || usp.has('enableLabels')) {
+    if (loStore['enableLabels'] == 'true' || usp.has('enableLabels')) {
         toggleLabels();
     }
     if (usp.has('extendedLabels')) {
-        extendedLabels = parseInt(usp.getFloat('extendedLabels')) + 2;
-        toggleExtendedLabels();
-    } else if (localStorage['extendedLabels']) {
-        extendedLabels = parseInt(localStorage['extendedLabels']) + 2;
-        toggleExtendedLabels();
+        extendedLabels = parseInt(usp.getFloat('extendedLabels'));
+        toggleExtendedLabels({ noIncrement: true });
+    } else if (loStore['extendedLabels']) {
+        extendedLabels = parseInt(loStore['extendedLabels']);
+        toggleExtendedLabels({ noIncrement: true });
     }
-    if (localStorage['trackLabels'] == "true" || usp.has('trackLabels')) {
+    if (loStore['trackLabels'] == "true" || usp.has('trackLabels')) {
         toggleTrackLabels();
     }
-    if (localStorage['tableInView'] == "true") {
-        toggleTableInView(true);
+    if (loStore['tableInView'] == "true" || usp.has('tableInView')) {
+        toggleTableInView('enable');
     }
-    if (localStorage['debug'] == "true")
+    if (loStore['debug'] == "true")
         debug = true;
-    if (localStorage['debugPosFilter'] == "true")
+    if (loStore['debugPosFilter'] == "true")
         debugPosFilter = true;
 
-    if (localStorage['noVanish'] == "true") {
+    if (loStore['noVanish'] == "true" || usp.has('noVanish')) {
         noVanish = true;
         //filterTracks = noVanish;
-        //localStorage['noVanish'] = "false";
+        //loStore['noVanish'] = "false";
         buttonActive('#P', noVanish);
     }
 
     jQuery('#tabs').tabs({
-        active: localStorage['active_tab'],
+        active: loStore['active_tab'],
         activate: function (event, ui) {
-            localStorage['active_tab'] = jQuery("#tabs").tabs("option", "active");
+            loStore['active_tab'] = jQuery("#tabs").tabs("option", "active");
         },
         collapsible: true
     });
@@ -742,36 +1069,18 @@ function initPage() {
     initializeUnitsSelector();
     TAR.planeMan.init();
 
-    // Set up map/sidebar splitter
-    jQuery("#sidebar_container").resizable({
-        handles: {
-            w: '#splitter'
-        },
-        minWidth: 150,
-        maxWidth: (jQuery(window).innerWidth() *0.8),
-    });
-
-    jQuery("#splitter").dblclick(function() {
-        jQuery('#legend').hide();
-        jQuery('#sidebar_container').width('auto');
-        updateMapSize();
-        localStorage['sidebar_width'] = jQuery('#sidebar_container').width();
-        jQuery('#sidebar_container').width(localStorage['sidebar_width']);
-        jQuery('#legend').show();
-    });
-
-    if (localStorage['sidebar_width'] != null)
-        jQuery('#sidebar_container').width(localStorage['sidebar_width']);
+    if (loStore['sidebar_width'] != null)
+        jQuery('#sidebar_container').width(loStore['sidebar_width']);
     else
         jQuery('#sidebar_container').width('25%');
 
     if (jQuery('#sidebar_container').width() > jQuery(window).innerWidth() *0.8)
         jQuery('#sidebar_container').width('30%');
 
-    localStorage['sidebar_width'] = jQuery('#sidebar_container').width();
+    loStore['sidebar_width'] = jQuery('#sidebar_container').width();
 
     jQuery('#sidebar_container').on('resize', function() {
-        localStorage['sidebar_width'] = jQuery('#sidebar_container').width();
+        loStore['sidebar_width'] = jQuery('#sidebar_container').width();
     });
 
     // Set up event handlers for buttons
@@ -780,15 +1089,20 @@ function initPage() {
 
     // Set up altitude filter button event handlers and validation options
     jQuery("#altitude_filter_form").submit(onFilterByAltitude);
-    jQuery("#callsign_filter_form").submit(updateCallsignFilter);
-    jQuery("#type_filter_form").submit(updateTypeFilter);
-    jQuery("#description_filter_form").submit(updateDescriptionFilter);
-    jQuery("#icao_filter_form").submit(updateIcaoFilter);
     jQuery("#source_filter_form").submit(updateSourceFilter);
     jQuery("#flag_filter_form").submit(updateFlagFilter);
 
+    jQuery("#altitude_filter_reset_button").click(onResetAltitudeFilter);
+    jQuery("#source_filter_reset_button").click(onResetSourceFilter);
+    jQuery("#flag_filter_reset_button").click(onResetFlagFilter);
+
     // Initialize other controls
     jQuery("#search_form").submit(onSearch);
+    jQuery("#search_clear_button").click(onSearchClear);
+    jQuery("#jump_clear_button").click(function() {
+        jQuery("#jump_input").val("");
+        jQuery("#jump_input").blur();
+    });
     jQuery("#jump_form").submit(onJump);
 
     jQuery("#show_trace").click(toggleShowTrace);
@@ -812,17 +1126,6 @@ function initPage() {
         },
     });
 
-    jQuery("#replayDatepicker").datepicker({
-        maxDate: '+1d',
-        dateFormat: "yy-mm-dd",
-        autoSize: true,
-        onClose: !onMobile ? null : function(dateText, inst){
-            jQuery("replayDatepicker").attr("disabled", false);
-        },
-        beforeShow: !onMobile ? null : function(input, inst){
-            jQuery("replayDatepicker").attr("disabled", true);
-        },
-    });
     jQuery("#replayPlay").click(function(){
 
         if (replay.playing){
@@ -832,34 +1135,11 @@ function initPage() {
         } else {
             //if paused, play.
             playReplay(true);
-            play();
         }
-    });
-    jQuery("#findHistory").click(function(){
-        console.log("replayDatepicker: "+replayDatepicker.value);
-        console.log("hourSelect: "+ replay.hours);
-        console.log("minuteSelect: "+ replay.minutes);
-        console.log("speedSelect: "+ replay.speed);
-        let date = new Date(replayDatepicker.value);
-        date.setUTCHours(Number(replay.hours));
-        date.setUTCMinutes(Number(replay.minutes));
-
-        replay.ival = 60 * 1000;
-
-        replayClear();
-        loadReplay(date);
     });
 
     jQuery("#leg_prev").click(function() {legShift(-1)});
     jQuery("#leg_next").click(function() {legShift(1)});
-
-    jQuery("#altitude_filter_reset_button").click(onResetAltitudeFilter);
-    jQuery("#callsign_filter_reset_button").click(onResetCallsignFilter);
-    jQuery("#type_filter_reset_button").click(onResetTypeFilter);
-    jQuery("#description_filter_reset_button").click(onResetDescriptionFilter);
-    jQuery("#icao_filter_reset_button").click(onResetIcaoFilter);
-    jQuery("#source_filter_reset_button").click(onResetSourceFilter);
-    jQuery("#flag_filter_reset_button").click(onResetFlagFilter);
 
     jQuery('#settingsCog').on('click', function() {
         jQuery('#settings_infoblock').toggle();
@@ -894,10 +1174,121 @@ function initPage() {
         init: true,
         setState: function(state) {
             lastLeg = state;
-            if (SelectedPlane && !showTrace)
-                SelectedPlane.processTrace();
+            if (loadFinished && !showTrace) {
+                for (let i in SelPlanes) {
+                    SelPlanes[i].processTrace();
+                }
+            }
         }
     });
+    new Toggle({
+        key: "labelsGeom",
+        display: "Labels: geom. alt. (WGS84)",
+        container: "#settingsLeft",
+        init: labelsGeom,
+        setState: function(state) {
+            labelsGeom = state;
+            if (loadFinished) {
+                remakeTrails();
+                refreshSelected();
+            }
+        }
+    });
+    new Toggle({
+        key: "geomUseEGM",
+        display: "Geom. alt.: WGS84 -> EGM conversion (long load)",
+        container: "#settingsLeft",
+        init: geomUseEGM,
+        setState: function(state) {
+            geomUseEGM = state;
+            if (geomUseEGM) {
+jQuery('#selected_altitude_geom1')
+                jQuery('#selected_altitude_geom1_title').updateText('EGM96 altitude');
+                jQuery('#selected_altitude_geom2_title').updateText('Geom. EGM96');
+                let egm = loadEGM();
+                if (egm) {
+                    egm.addEventListener('load', function() {
+                        remakeTrails();
+                        refreshSelected();
+                    });
+                    return;
+                }
+            } else {
+                jQuery('#selected_altitude_geom1_title').updateText('WGS84 altitude');
+                jQuery('#selected_altitude_geom2_title').updateText('Geom. WGS84');
+            }
+            if (loadFinished) {
+                remakeTrails();
+                refreshSelected();
+            }
+        }
+    });
+
+
+    if (usp.has('labelsGeom')) {
+        toggles['labelsGeom'].toggle(true, 'init');
+    }
+
+    if (usp.has('geomEGM')) {
+        toggles['geomUseEGM'].toggle(true, 'init');
+    }
+
+    new Toggle({
+        key: "utcTimesLive",
+        display: "Live track labels: UTC",
+        container: "#settingsLeft",
+        init: utcTimesLive,
+        setState: function(state) {
+            utcTimesLive = state;
+            remakeTrails();
+            refreshSelected();
+        }
+    });
+
+    new Toggle({
+        key: "utcTimesHistoric",
+        display: "Historic track labels: UTC",
+        container: "#settingsLeft",
+        init: utcTimesHistoric,
+        setState: function(state) {
+            utcTimesHistoric = state;
+            remakeTrails();
+            refreshSelected();
+        }
+    });
+
+    new Toggle({
+        key: "windLabelsSlim",
+        display: "Smaller wind labels",
+        container: "#settingsLeft",
+        init: windLabelsSlim,
+        setState: function(state) {
+            windLabelsSlim = state;
+            if (!loadFinished)
+                return;
+            for (let key in g.planesOrdered) {
+                g.planesOrdered[key].updateMarker();
+            }
+        }
+    });
+
+    new Toggle({
+        key: "showLabelUnits",
+        display: "Label units",
+        container: "#settingsLeft",
+        init: showLabelUnits,
+        setState: function(state) {
+            showLabelUnits = state;
+            if (!loadFinished)
+                return;
+            for (let key in g.planesOrdered) {
+                g.planesOrdered[key].updateMarker();
+            }
+            remakeTrails();
+            refreshSelected();
+        }
+    });
+
 
     jQuery('#tStop').on('click', function() { traceOpts.replaySpeed = 0; gotoTime(traceOpts.showTime); });
     jQuery('#t1x').on('click', function() { replaySpeedChange(1); });
@@ -907,9 +1298,19 @@ function initPage() {
     jQuery('#t40x').on('click', function() { replaySpeedChange(40); });
 
     new Toggle({
+        key: "shareFilters",
+        display: "Include Filters In URLs",
+        container: "#settingsRight",
+        init: false,
+        setState: function(state) {
+            updateAddressBar();
+        }
+    });
+
+    new Toggle({
         key: "debugTracks",
         display: "Debug Tracks",
-        container: "#settingsLeft",
+        container: "#settingsRight",
         init: false,
         setState: function(state) {
             debugTracks = state;
@@ -920,7 +1321,7 @@ function initPage() {
     new Toggle({
         key: "debugAll",
         display: "Debug show all",
-        container: "#settingsLeft",
+        container: "#settingsRight",
         init: false,
         setState: function(state) {
             if (state)
@@ -946,18 +1347,18 @@ function initPage() {
 
     new Toggle({
         key: "updateLocation",
-        display: "update GPS location",
+        display: "Update GPS location",
         container: "#settingsRight",
         init: updateLocation,
         setState: function(state) {
             updateLocation = state;
-            watchPosition();
+            runAfterLoad(watchPosition);
         }
     });
 
     new Toggle({
         key: "autoselect",
-        display: "auto-select closest",
+        display: "Auto-select plane",
         container: "#settingsRight",
         init: autoselect,
         setState: function(state) {
@@ -1042,42 +1443,82 @@ function initPage() {
         setState: function (state) {
             if (state) {
                 jQuery("#sidebar_container").show();
-                jQuery("#expand_sidebar_control").show();
+                jQuery("#expand_sidebar_button").show();
                 jQuery("#toggle_sidebar_button").removeClass("show_sidebar");
                 jQuery("#toggle_sidebar_button").addClass("hide_sidebar");
+                if (!g.sidebar_initiated) {
+                    g.sidebar_initiated = true;
+                    // Set up map/sidebar splitter
+                    jQuery("#sidebar_container").resizable({
+                        handles: {
+                            w: '#splitter'
+                        },
+                        minWidth: 150,
+                        maxWidth: (jQuery(window).innerWidth() *0.8),
+                    });
+
+                    jQuery("#splitter").dblclick(function() {
+                        jQuery('#legend').hide();
+                        jQuery('#sidebar_container').width('auto');
+                        updateMapSize();
+                        loStore['sidebar_width'] = jQuery('#sidebar_container').width();
+                        jQuery('#sidebar_container').width(loStore['sidebar_width']);
+                        jQuery('#legend').show();
+                    });
+
+                }
+                if (!hideButtons) {
+                    jQuery('#splitter').show();
+                }
             } else {
-                jQuery("#sidebar_container").hide();
-                jQuery("#expand_sidebar_control").hide();
-                jQuery("#toggle_sidebar_button").removeClass("hide_sidebar");
-                jQuery("#toggle_sidebar_button").addClass("show_sidebar");
+                if (loadFinished) {
+                    jQuery("#sidebar_container").hide();
+                    jQuery("#expand_sidebar_button").hide();
+                    jQuery("#toggle_sidebar_button").removeClass("hide_sidebar");
+                    jQuery("#toggle_sidebar_button").addClass("show_sidebar");
+                }
             }
-            updateMapSize();
+            if (loadFinished) {
+                updateMapSize();
+            }
         },
     });
 
+    if (!showPictures) {
+        planespottingAPI = false;
+        planespottersAPI = false;
+    }
     new Toggle({
-        key: "showPictures",
-        display: "Show Pictures",
+        key: "planespottingAPI",
+        display: "Pictures planespotting.be",
         container: "#settingsRight",
-        init: showPictures,
+        init: planespottingAPI,
         setState: function(state) {
-            showPictures = state;
+            planespottingAPI = state;
             if (state) {
-                jQuery('#photo_container').removeClass('hidden');
-            } else {
-                jQuery('#photo_container').addClass('hidden');
+                toggles['planespottersAPI'] && toggles['planespottersAPI'].toggle(false);
             }
-            if (showPictures && planespottersAPI) {
-                jQuery('#photoLinkRow').addClass('hidden');
-            } else {
-                jQuery('#photoLinkRow').removeClass('hidden');
+            setPictureVisibility();
+            refreshSelected();
+        }
+    });
+    new Toggle({
+        key: "planespottersAPI",
+        display: "Pictures planespotters.net",
+        container: "#settingsRight",
+        init: planespottersAPI,
+        setState: function(state) {
+            planespottersAPI = state;
+            if (state) {
+                toggles['planespottingAPI'] && toggles['planespottingAPI'].toggle(false);
             }
+            setPictureVisibility();
             refreshSelected();
         }
     });
 
     new Toggle({
-        key: "selectedDetails",
+        key: "enableInfoblock",
         display: "Enable Infoblock",
         container: "#settingsRight",
         init: true,
@@ -1096,6 +1537,25 @@ function initPage() {
             adjustInfoBlock();
         }
     });
+
+    if (onMobile) {
+        enableMouseover = false;
+        (typeof hideById != 'undefined') && (hideById) && (hideById('tracking_leaderboard_container'));
+    }
+
+    new Toggle({
+        key: "enableMouseover",
+        display: "Enable mouse-over block",
+        container: "#settingsRight",
+        init: enableMouseover,
+        setState: function(state) {
+            enableMouseover = state;
+            if (loadFinished) {
+                checkPointermove();
+            }
+        }
+    });
+
 
 
     jQuery('#selectall_checkbox').on('click', function() {
@@ -1120,9 +1580,12 @@ function initPage() {
     if (adsbexchange) {
         jQuery('#adsbexchange_header').show();
         jQuery('#credits').show();
+        if (!onMobile) {
+            jQuery('#creditsSelected').show();
+        }
         jQuery('#selected_infoblock').addClass('adsbx-selected-bg');
-        if (window.self != window.top) {
-            window.top.location.href = "https://www.adsbexchange.com/"
+        if (false && window.self != window.top) {
+            window.top.location.href = "https://www.adsbexchange.com/";
             return;
         }
     }
@@ -1147,24 +1610,24 @@ function initLegend(colors) {
 }
 
 function initSourceFilter(colors) {
-    const createFilter = function (color, text) {
-        return '<li class="ui-widget-content" style="background-color:' + color + ';">' + text + '</li>';
+    const createFilter = function (color, text, key) {
+        return '<li class="ui-widget-content" style="background-color:' + color + ';" id="source-filter-' + key + '">' + text + '</li>';
     };
 
     let html = '';
-    html += createFilter(colors['adsb'], 'ADS-B');
+    html += createFilter(colors['adsb'], 'ADS-B', sources[0]);
 
-    html += createFilter(colors['uat'], 'UAT / ADS-R');
-    html += createFilter(colors['mlat'], 'MLAT');
-    html += createFilter(colors['tisb'], 'TIS-B');
+    html += createFilter(colors['uat'], 'UAT / ADS-R', sources[1][0]);
+    html += createFilter(colors['mlat'], 'MLAT', sources[2]);
+    html += createFilter(colors['tisb'], 'TIS-B', sources[3]);
 
     //if (!globeIndex)
-    html += createFilter(colors['modeS'], 'Mode-S');
+    html += createFilter(colors['modeS'], 'Mode-S', sources[4]);
     if (globeIndex)
-        html += createFilter(colors['other'], 'Other');
+        html += createFilter(colors['other'], 'Other', sources[5]);
 
     if (globeIndex)
-        html += createFilter(colors['uat'], 'ADS-C');
+        html += createFilter(colors['uat'], 'ADS-C', sources[6]);
 
     document.getElementById('sourceFilter').innerHTML = html;
 
@@ -1187,15 +1650,15 @@ function initSourceFilter(colors) {
 }
 
 function initFlagFilter(colors) {
-    const createFilter = function (color, text) {
-        return '<li class="ui-widget-content" style="background-color:' + color + ';">' + text + '</li>';
+    const createFilter = function (color, text, key) {
+        return '<li class="ui-widget-content" style="background-color:' + color + ';" id="flag-filter-' + key + '">' + text + '</li>';
     };
 
     let html = '';
-    html += createFilter(colors['tisb'], 'Military');
+    html += createFilter(colors['tisb'], 'Military', flagFilterValues[0]);
     //html += createFilter(colors['mlat'], 'Interesting');
-    html += createFilter(colors['uat'], 'PIA');
-    html += createFilter(colors['adsb'], 'LADD');
+    html += createFilter(colors['uat'], 'PIA', flagFilterValues[1]);
+    html += createFilter(colors['adsb'], 'LADD', flagFilterValues[2]);
 
     document.getElementById('flagFilter').innerHTML = html;
 
@@ -1219,14 +1682,9 @@ function initFlagFilter(colors) {
 
 function push_history() {
     jQuery("#loader_progress").attr('max',nHistoryItems*2);
+
     for (let i = 0; i < nHistoryItems; i++) {
         push_history_item(i);
-    }
-    if (globeIndex) {
-        parseHistory();
-    } else if (!nHistoryItems) {
-        parseHistory();
-        console.log("History loading failed");
     }
 }
 
@@ -1268,10 +1726,8 @@ function push_history_item(i) {
 }
 
 function parseHistory() {
-    if (nHistoryItems) {
-        console.timeEnd("Downloaded History");
-        console.time("Loaded aircraft tracks from History");
-    }
+    console.timeEnd("Downloaded History");
+    console.time("Loaded aircraft tracks from History");
 
     for (let i in deferHistory)
         deferHistory[i] = null;
@@ -1318,10 +1774,10 @@ function parseHistory() {
 
         // Final pass to update all planes to their latest state
         console.log("Final history cleanup pass");
-        for (let i in PlanesOrdered) {
-            let plane = PlanesOrdered[i];
+        for (let i in g.planesOrdered) {
+            let plane = g.planesOrdered[i];
 
-            if (plane.position && SitePosition)
+            if (plane.position && SitePosition && !pTracks)
                 plane.sitedist = ol.sphere.getDistance(SitePosition, plane.position);
 
             if (uatNoTISB && plane.uat && plane.type && plane.type.substring(0,4) == "tisb") {
@@ -1335,21 +1791,41 @@ function parseHistory() {
 
     PositionHistoryBuffer = null;
 
-    if (nHistoryItems)
-        console.timeEnd("Loaded aircraft tracks from History");
+    console.timeEnd("Loaded aircraft tracks from History");
 
     historyLoaded.resolve();
 }
 
+let replay_was_active = false;
 let timers = {};
-function clearIntervalTimers() {
+let timersActive = false;
+function clearIntervalTimers(arg) {
+    timersActive = false;
+
+    if (loadFinished && arg != 'silent') {
+        jQuery("#timers_paused_detail").text('Timers paused (tab hidden).');
+        jQuery("#timers_paused").css('display','block');
+
+    }
+    console.log("clear timers " + localTime(new Date()));
     const entries = Object.entries(timers);
     for (let i in entries) {
         clearInterval(entries[i][1]);
     }
+
 }
 
 function setIntervalTimers() {
+    if (timersActive) {
+        return;
+    }
+
+    timersActive = true;
+
+    if (loadFinished) {
+        jQuery("#timers_paused").css('display','none');
+    }
+    console.log("set timers " + localTime(new Date()));
     if ((adsbexchange || dynGlobeRate) && !uuid) {
         timers.globeRateUpdate = setInterval(globeRateUpdate, 180000);
     }
@@ -1358,24 +1834,30 @@ function setIntervalTimers() {
 
     timers.checkMove = setInterval(checkMovement, 50);
     timers.everySecond = setInterval(everySecond, 850);
-    timers.reaper = setInterval(reaper, 20000);
+
+    //timers.reaper = setInterval(reaper, 40000);
+
     if (tempTrails) {
         timers.trailReaper = window.setInterval(trailReaper, 10000);
         trailReaper(now);
     }
     if (enable_pf_data && !pTracks && !globeIndex) {
-        jQuery('#pf_info_contianer').removeClass('hidden');
+        jQuery('#pf_info_container').removeClass('hidden');
         timers.pf_data = window.setInterval(fetchPfData, RefreshInterval*10.314);
         fetchPfData();
     }
     if (receiverJson && receiverJson.outlineJson) {
-        timers.drawOutline = window.setInterval(drawOutlineJson, 30000);
+        timers.drawOutline = window.setInterval(drawOutlineJson, 15000);
         drawOutlineJson();
     }
 }
 
+let djson;
+let dstring;
+let dresult;
 
 function startPage() {
+
     console.log("Completing init");
 
     if (!globeIndex) {
@@ -1383,28 +1865,25 @@ function startPage() {
         jQuery('#show_trace').hide();
     }
     if (globeIndex) {
-        jQuery('#V').hide();
+        toggleTableInView('enable');
+        if (icaoFilter) {
+            toggleTableInView('disable');
+        }
     } else {
+        jQuery('#V').show();
     }
 
     if (hideButtons) {
         jQuery('#header_top').hide();
         jQuery('#header_side').hide();
-        jQuery('#splitter').hide();
         jQuery('#tabs').hide();
         jQuery('#filterButton').hide();
         jQuery('.ol-control').hide();
         jQuery('.ol-attribution').show();
     }
 
-    if (!icaoFilter && globeIndex)
-        toggleTableInView(true);
-
     changeZoom("init");
     changeCenter("init");
-
-    clearIntervalTimers();
-    setIntervalTimers();
 
     processURLParams();
     if (usp.has('reg')) {
@@ -1412,7 +1891,7 @@ function startPage() {
         req.done(function() {
             const queries = usp.get('reg').split(',');
             for (let i in queries) {
-                let icao = regCache[queries[i].toUpperCase()];
+                let icao = db.regCache[queries[i].toUpperCase()];
                 if (icao) {
                     icao = icao.toLowerCase();
                     urlIcaos.push(icao);
@@ -1427,20 +1906,19 @@ function startPage() {
     // Kick off first refresh.
     fetchData();
 
+    clearIntervalTimers();
+    setIntervalTimers();
+
     if (tempTrails)
         selectAllPlanes();
 
     if (!heatmap)
-        jQuery("#loader").addClass("hidden");
+        jQuery("#loader").hide();
 
     if (replay) {
-        loadReplay(replay.ts);
         showReplayBar();
+        loadReplay(replay.ts);
     }
-
-    geoMag = geoMagFactory(cof2Obj());
-
-    mapRefresh();
 
     if (heatmap) {
         drawHeatmap();
@@ -1450,6 +1928,15 @@ function startPage() {
 
     if (pTracks)
         setTimeout(TAR.planeMan.refresh, 10000);
+
+    window.addEventListener("beforeunload", function (event) {
+        //jQuery("#map_canvas").hide();
+        clearIntervalTimers('silent');
+    });
+
+    if (heatmap || replay || showTrace || pTracks || inhibitFetch) {
+        afterFirstFetch();
+    }
 }
 
 //
@@ -1498,18 +1985,20 @@ function webglAddLayer() {
     let success = false;
 
     const icao = '~c0ffee';
-    if (icaoFilter) {
+
+    if (icaoFilter != null) {
         icaoFilter.push(icao);
     }
+
     processAircraft({hex: icao, lat: CenterLat, lon: CenterLon, type: 'tisb_other', seen: 0, seen_pos: 0,
         alt_baro: 25000, });
-    let plane = Planes['~c0ffee'];
+    let plane = g.planes['~c0ffee'];
 
     try {
         let glStyle = {
             symbol: {
                 symbolType: 'image',
-                src: 'images/sprites010.png',
+                src: 'images/sprites016.png',
                 size: [ 'get', 'size' ],
                 offset: [0, 0],
                 textureCoord: [ 'array',
@@ -1575,14 +2064,18 @@ function webglAddLayer() {
             console.error(error);
         }
         console.error(error);
-        localStorage['webglFailStamp'] = new Date().getTime();
+        loStore['webglFailStamp'] = new Date().getTime();
         success = false;
-        if (localStorage['webgl'] == 'true')
-            localStorage.removeItem('webgl');
+        if (loStore['webgl'] == 'true')
+            loStore.removeItem('webgl');
     }
-    delete Planes[plane.icao];
-    PlanesOrdered.splice(PlanesOrdered.indexOf(plane), 1);
+    delete g.planes[plane.icao];
+    g.planesOrdered.splice(g.planesOrdered.indexOf(plane), 1);
     plane.destroy();
+
+    if (icaoFilter != null) {
+        icaoFilter.pop(icao);
+    }
 
     return success;
 }
@@ -1590,9 +2083,9 @@ function webglAddLayer() {
 function webglInit() {
     let init = true;
     // if webGL failed in the last 7 days, don't even try unless people click the toggle.
-    if (localStorage['webglFailStamp'] && Number(localStorage['webglFailStamp']) +  7 * 24 * 3600 * 1000 > new Date().getTime()) {
+    if (loStore['webglFailStamp'] && Number(loStore['webglFailStamp']) +  7 * 24 * 3600 * 1000 > new Date().getTime()) {
         init = false;
-        if (localStorage['webgl'] == undefined)
+        if (loStore['webgl'] == undefined)
             console.log('webGL failed in the past 7 days, not even trying to initialize it');
     }
     new Toggle({
@@ -1619,8 +2112,8 @@ function webglInit() {
                 webgl = false;
                 if (loadFinished) {
                     webglFeatures && webglFeatures.clear();
-                    for (let i in PlanesOrdered) {
-                        const plane = PlanesOrdered[i];
+                    for (let i in g.planesOrdered) {
+                        const plane = g.planesOrdered[i];
                         delete plane.glMarker;
                     }
                 }
@@ -1633,30 +2126,214 @@ function webglInit() {
     });
 }
 
+function ol_map_init() {
+
+    OLMap = new ol.Map({
+        target: 'map_canvas',
+        layers: layers_group,
+        view: new ol.View({
+            center: ol.proj.fromLonLat([CenterLon, CenterLat]),
+            zoom: zoomLvl,
+            multiWorld: true,
+        }),
+        controls: [new ol.control.Zoom({delta: 1, duration: 0, target: 'map_canvas',}),
+            new ol.control.Attribution({collapsed: true}),
+            new ol.control.ScaleLine({units: DisplayUnits})
+        ],
+        interactions: new ol.interaction.defaults({altShiftDragRotate:false, pinchRotate:false,}),
+    });
+
+    console.time('webglInit');
+    webglInit();
+    console.timeEnd('webglInit');
+
+
+    let foundType = false;
+    ol.control.LayerSwitcher.forEachRecursive(layers_group, function(lyr) {
+        if (lyr.get('name') && lyr.get('type') == 'base') {
+            if (MapType_tar1090 == lyr.get('name')) {
+                foundType = true;
+            }
+        }
+    });
+    if (!foundType) {
+        MapType_tar1090 = "osm_adsbx";
+    }
+
+    ol.control.LayerSwitcher.forEachRecursive(layers_group, function(lyr) {
+        if (!lyr.get('name'))
+            return;
+
+        if (lyr.get('type') == 'base') {
+            if (MapType_tar1090 == lyr.get('name')) {
+                foundType = true;
+                lyr.setVisible(true);
+            } else {
+                lyr.setVisible(false);
+            }
+
+            lyr.on('change:visible', function(evt) {
+                if (evt.target.getVisible()) {
+                    MapType_tar1090 = loStore['MapType_tar1090'] = evt.target.get('name');
+                    mapTypeSettings();
+                }
+            });
+        } else if (lyr.get('type') === 'overlay') {
+            if (
+                loStore['layer_' + lyr.get('name')] == 'true'
+                || enableOverlays.indexOf(lyr.get('name')) >= 0
+                || (loStore['layer_' + lyr.get('name')] != 'false' && defaultOverlays.indexOf(lyr.get('name')) >= 0)
+            ) {
+                lyr.setVisible(true);
+            }
+            if (loStore['layer_' + lyr.get('name')] == 'false') {
+                lyr.setVisible(false);
+            }
+
+            lyr.on('change:visible', function(evt) {
+                loStore['layer_' + evt.target.get('name')] = evt.target.getVisible();
+            });
+        }
+    })
+
+    if (!foundType) {
+        ol.control.LayerSwitcher.forEachRecursive(layers_group, function(lyr) {
+            if (foundType)
+                return;
+            if (lyr.get('type') === 'base') {
+                lyr.setVisible(true);
+                foundType = true;
+            }
+        });
+    }
+
+    OLProj = OLMap.getView().getProjection();
+    OLProjExtent = OLProj.getExtent();
+
+    OLMap.getView().setRotation(mapOrientation); // adjust orientation
+
+    OLMap.addControl(new ol.control.LayerSwitcher({
+        groupSelectStyle: 'none',
+        activationMode: 'click', // click sucks in the current implementation
+        target: 'map_canvas',
+    }));
+
+    OLMap.on('movestart', function(event) {
+        webgl && TrackedAircraftPositions > 2000 && webglLayer.setOpacity(0.25);
+    });
+
+    OLMap.on('moveend', function(event) {
+        checkMovement();
+        webgl && webglLayer.setOpacity(1);
+    });
+
+    OLMap.on(['click', 'dblclick'], function(evt) {
+        let trailHex = null;
+        let trailTS = null;
+        let planeHex = null;
+
+        let features = webgl ? webglFeatures : PlaneIconFeatures;
+        let evtCoords = evt.map.getCoordinateFromPixel(evt.pixel);
+        let feature = features.getClosestFeatureToCoordinate(evtCoords);
+        if (feature) {
+            let fPixel = evt.map.getPixelFromCoordinate(feature.getGeometry().getCoordinates());
+            let a = fPixel[0] - evt.pixel[0];
+            let b = fPixel[1] - evt.pixel[1];
+            let c = globalScale * (onMobile ? 30 : 20);
+            if (a**2 + b**2 < c**2)
+                planeHex = feature.hex;
+        }
+
+        if (!planeHex || showTrace) {
+            let features = evt.map.getFeaturesAtPixel(
+                evt.pixel,
+                {
+                    layerFilter: function(layer) { return (layer.get('isTrail') == true); },
+                    hitTolerance: globalScale * (onMobile ? 30 : 20),
+                }
+            );
+            if (features.length > 0) {
+                let close = 10000000000000;
+                let closest = features[0];
+                for (let j in features) {
+                    let feature = features[j];
+                    let coords;
+                    if (feature.isLabel)
+                        coords = [feature.getGeometry().getCoordinates()];
+                    else
+                        coords = feature.getGeometry().getCoordinates();
+
+                    for (let k in coords) {
+                        let fPixel = evt.map.getPixelFromCoordinate(coords[k]);
+                        let a = fPixel[0] - evt.pixel[0];
+                        let b = fPixel[1] - evt.pixel[1];
+                        let distance = a**2 + b**2;
+                        if (distance < close) {
+                            closest = feature;
+                            close = distance;
+                        }
+                    }
+                }
+                if (showTrace)
+                    trailTS = closest.timestamp;
+                else
+                    trailHex = closest.hex;
+            }
+        }
+
+        const dblclick = (evt.type === 'dblclick') && !showTrace;
+
+        if (showTrace && trailTS) {
+            gotoTime(trailTS);
+        }
+        let hex = planeHex || trailHex;
+        if (hex) {
+            selectPlaneByHex(hex, {noDeselect: dblclick, follow: dblclick});
+        }
+
+        if (!hex && !multiSelect && !showTrace) {
+            if (onlySelected)
+                toggleIsolation();
+            deselect(SelectedPlane);
+            refreshFilter();
+        }
+        evt.stopPropagation();
+    });
+
+    // show the hover box
+    if (!globeIndex && zoomLvl > 5.5 && enableMouseover) {
+        OLMap.on('pointermove', onPointermove);
+    }
+}
+
 // Initalizes the map and starts up our timers to call various functions
 function initMap() {
-    
-    if (globeIndex) {
+
+    if (globeIndex && adsbexchange) {
         jQuery('#dump1090_total_history_td').hide();
         jQuery('#dump1090_message_rate_td').hide();
     }
 
     // Load stored map settings if present
-    CenterLon = Number(localStorage['CenterLon']) || DefaultCenterLon;
-    CenterLat = Number(localStorage['CenterLat']) || DefaultCenterLat;
-    ZoomLvl = Number(localStorage['ZoomLvl']) || DefaultZoomLvl;
-    ZoomLvlCache = ZoomLvl;
+    CenterLon = Number(loStore['CenterLon']) || DefaultCenterLon;
+    CenterLat = Number(loStore['CenterLat']) || DefaultCenterLat;
+    zoomLvl = Number(loStore['zoomLvl']) || DefaultZoomLvl;
+    zoomLvlCache = zoomLvl;
 
     if (overrideMapType)
         MapType_tar1090 = overrideMapType;
-    else if (localStorage['MapType_tar1090']) {
-        MapType_tar1090 = localStorage['MapType_tar1090'];
+    else if (loStore['MapType_tar1090']) {
+        MapType_tar1090 = loStore['MapType_tar1090'];
     }
+
+    mapTypeSettings();
 
     // Initialize OpenLayers
 
     layers_group = createBaseLayers();
     layers = layers_group.getLayers();
+
+    //add_kml_overlay('https://developers.google.com/kml/documentation/KML_Samples.kml', 'samples', 0.8);
 
     siteCircleLayer = new ol.layer.Vector({
         name: 'siteCircles',
@@ -1670,6 +2347,12 @@ function initMap() {
     });
     layers.push(siteCircleLayer);
 
+    siteCircleLayer.on('change:visible', function(evt) {
+        if (evt.target.getVisible()) {
+            runAfterLoad(geoFindMe);
+        }
+    });
+
     locationDotLayer = new ol.layer.Vector({
         name: 'locationDot',
         type: 'overlay',
@@ -1681,6 +2364,12 @@ function initMap() {
         renderBuffer: renderBuffer,
     });
     layers.push(locationDotLayer);
+
+    locationDotLayer.on('change:visible', function(evt) {
+        if (evt.target.getVisible()) {
+            runAfterLoad(geoFindMe);
+        }
+    });
 
 
     if (receiverJson && receiverJson.outlineJson) {
@@ -1701,6 +2390,7 @@ function initMap() {
             zIndex: 101,
             renderBuffer: renderBuffer,
             style: actualOutlineStyle,
+            visible: actual_range_show,
         });
         layers.push(actualOutlineLayer);
     }
@@ -1748,192 +2438,17 @@ function initMap() {
     layers.push(iconLayer);
 
 
-    OLMap = new ol.Map({
-        target: 'map_canvas',
-        layers: layers,
-        view: new ol.View({
-            center: ol.proj.fromLonLat([CenterLon, CenterLat]),
-            zoom: ZoomLvl,
-            multiWorld: true,
-        }),
-        controls: [new ol.control.Zoom({delta: 1, duration: 0, target: 'map_canvas',}),
-            new ol.control.Attribution({collapsed: true}),
-            new ol.control.ScaleLine({units: DisplayUnits})
-        ],
-        interactions: new ol.interaction.defaults({altShiftDragRotate:false, pinchRotate:false,}),
-    });
+    ol_map_init();
 
-    console.time('webglInit');
-    webglInit();
-    console.timeEnd('webglInit');
-
-    let foundType = false;
-    ol.control.LayerSwitcher.forEachRecursive(layers_group, function(lyr) {
-        if (lyr.get('name') && lyr.get('type') == 'base') {
-            if (MapType_tar1090 == lyr.get('name')) {
-                foundType = true;
-            }
-        }
-    });
-    if (!foundType) {
-        MapType_tar1090 = "osm_adsbx";
-    }
-
-    ol.control.LayerSwitcher.forEachRecursive(layers_group, function(lyr) {
-        if (!lyr.get('name'))
-            return;
-
-        if (lyr.get('type') == 'base') {
-            if (MapType_tar1090 == lyr.get('name')) {
-                foundType = true;
-                lyr.setVisible(true);
-            } else {
-                lyr.setVisible(false);
-            }
-
-            lyr.on('change:visible', function(evt) {
-                if (evt.target.getVisible()) {
-                    MapType_tar1090 = localStorage['MapType_tar1090'] = evt.target.get('name');
-                }
-            });
-        } else if (lyr.get('type') === 'overlay') {
-            if (localStorage['layer_' + lyr.get('name')] == 'true' || enableOverlays.indexOf(lyr.get('name')) >= 0) {
-                lyr.setVisible(true);
-            }
-            if (localStorage['layer_' + lyr.get('name')] == 'false') {
-                lyr.setVisible(false);
-            }
-
-            lyr.on('change:visible', function(evt) {
-                localStorage['layer_' + evt.target.get('name')] = evt.target.getVisible();
-            });
-        }
-    })
-
-    if (!foundType) {
-        ol.control.LayerSwitcher.forEachRecursive(layers_group, function(lyr) {
-            if (foundType)
-                return;
-            if (lyr.get('type') === 'base') {
-                lyr.setVisible(true);
-                foundType = true;
-            }
-        });
-    }
-
-    OLProj = OLMap.getView().getProjection();
-
-    OLMap.getView().setRotation(mapOrientation); // adjust orientation
-
-    OLMap.addControl(new ol.control.LayerSwitcher({
-        groupSelectStyle: 'none',
-        target: 'map_canvas',
-    }));
-
-    OLMap.on('moveend', function(event) {
-        checkMovement();
-    });
-    /*
-    // Listeners for newly created Map
-    OLMap.getView().on('change:center', function(event) {
-        const center = ol.proj.toLonLat(OLMap.getView().getCenter(), OLMap.getView().getProjection());
-        CenterLat = center[1];
-        CenterLon = center[0];
-        if (FollowSelected) {
-            // On manual navigation, disable follow
-            if (!SelectedPlane || !SelectedPlane.position ||
-                (Math.abs(center[0] - SelectedPlane.position[0]) > 0.0001 &&
-                    Math.abs(center[1] - SelectedPlane.position[1]) > 0.0001)){
-                FollowSelected = false;
-                refreshSelected();
-                refreshHighlighted();
-            }
-        }
-    });
-    */
-
-    /*
-    OLMap.getView().on('change:resolution', function(event) {
-        ZoomLvl = OLMap.getView().getZoom();
-    });
-    */
-
-    OLMap.on(['click', 'dblclick'], function(evt) {
-        let trailHex = null;
-        let trailTS = null;
-        let planeHex = null;
-
-        let features = webgl ? webglFeatures : PlaneIconFeatures;
-        let evtCoords = evt.map.getCoordinateFromPixel(evt.pixel);
-        let feature = features.getClosestFeatureToCoordinate(evtCoords);
-        if (feature) {
-            let fPixel = evt.map.getPixelFromCoordinate(feature.getGeometry().getCoordinates());
-            let a = fPixel[0] - evt.pixel[0];
-            let b = fPixel[1] - evt.pixel[1];
-            let c = globalScale * 25;
-            if (a**2 + b**2 < c**2)
-                planeHex = feature.hex;
-        }
-
-        if (!planeHex || showTrace) {
-            let features = evt.map.getFeaturesAtPixel(
-                evt.pixel,
-                {
-                    layerFilter: function(layer) { return (layer.get('isTrail') == true); },
-                    hitTolerance: globalScale * 20,
-                }
-            );
-            if (features.length > 0) {
-                let close = 10000000000000;
-                let closest = features[0];
-                for (let j in features) {
-                    let feature = features[j];
-                    let coords;
-                    if (feature.isLabel)
-                        coords = [feature.getGeometry().getCoordinates()];
-                    else
-                        coords = feature.getGeometry().getCoordinates();
-
-                    for (let k in coords) {
-                        let fPixel = evt.map.getPixelFromCoordinate(coords[k]);
-                        let a = fPixel[0] - evt.pixel[0];
-                        let b = fPixel[1] - evt.pixel[1];
-                        let distance = a**2 + b**2;
-                        if (distance < close) {
-                            closest = feature;
-                            close = distance;
-                        }
-                    }
-                }
-                if (showTrace)
-                    trailTS = closest.timestamp;
-                else
-                    trailHex = closest.hex;
-            }
-        }
-
-        const dblclick = (evt.type === 'dblclick') && !showTrace;
-
-        if (showTrace && trailTS) {
-            gotoTime(trailTS);
-        }
-        let hex = planeHex || trailHex;
-        if (hex) {
-            selectPlaneByHex(hex, {noDeselect: dblclick, follow: dblclick});
-        }
-
-        if (!hex && !multiSelect && !showTrace) {
-            if (onlySelected)
-                toggleIsolation();
-            deselect(SelectedPlane);
-            refreshFilter();
-            updateAddressBar();
-        }
-        evt.stopPropagation();
-    });
+    // handle the layer settings pane checkboxes
+    //OLMap.once('postrender', function(e) {
+        //toggleLayer('#nexrad_checkbox', 'nexrad');
+        //toggleLayer('#sitepos_checkbox', 'site_pos');
+        //toggleLayer('#actrail_checkbox', 'ac_trail');
+        //toggleLayer('#acpositions_checkbox', 'webglLayer');
+    //});
 
     jQuery('#infoblock_close').on('click', function () {
-
         if (showTrace)
             toggleShowTrace();
         if (onlySelected)
@@ -1941,22 +2456,9 @@ function initMap() {
 
         deselect(SelectedPlane);
         refreshFilter();
-        updateAddressBar();
     });
 
 
-    // show the hover box
-    if (!globeIndex && ZoomLvl > 5.5 && enableMouseover) {
-        OLMap.on('pointermove', onPointermove);
-    }
-
-    // handle the layer settings pane checkboxes
-    OLMap.once('postrender', function(e) {
-        //toggleLayer('#nexrad_checkbox', 'nexrad');
-        //toggleLayer('#sitepos_checkbox', 'site_pos');
-        //toggleLayer('#actrail_checkbox', 'ac_trail');
-        //toggleLayer('#acpositions_checkbox', 'webglLayer');
-    });
 
     new Toggle({
         key: "darkerColors",
@@ -1990,7 +2492,7 @@ function initMap() {
         key: "darkMode",
         display: "Dark Mode",
         container: "#settingsLeft",
-        init: isDarkModeEnabled(),
+        init: darkModeDefault,
         setState: function(state) {
             let root = document.documentElement;
             jQuery(".layer-switcher .panel").css("background", "var(--BGCOLOR1)");
@@ -2023,14 +2525,16 @@ function initMap() {
             if (loadFinished) {
                 TAR.planeMan.redraw();
                 refreshFilter();
+                initLegend(tableColors.unselected);
+                initSourceFilter(tableColors.unselected);
+                initFlagFilter(tableColors.unselected);
             }
-
-            initLegend(tableColors.unselected);
-            initSourceFilter(tableColors.unselected);
-            initFlagFilter(tableColors.unselected);
         }
     });
 
+    initLegend(tableColors.unselected);
+
+    initFilters();
 
     new Toggle({
         key: "MapDim",
@@ -2051,7 +2555,9 @@ function initMap() {
                     lyr.dimKey = lyr.on('postrender', dim);
                 });
             }
-            OLMap.render();
+            if (loadFinished) {
+                OLMap.render();
+            }
             buttonActive('#B', state);
         }
     });
@@ -2080,11 +2586,16 @@ function initMap() {
                 break;
                 // zoom and movement
             case "q":
+            case "-":
+            case "Subtract":
                 zoomOut();
                 break;
             case "e":
+            case "+":
+            case "Add":
                 zoomIn();
                 break;
+            case "ArrowUp":
             case "w":
                 oldCenter = OLMap.getView().getCenter();
                 extent = OLMap.getView().calculateExtent(OLMap.getSize());
@@ -2092,6 +2603,7 @@ function initMap() {
                 OLMap.getView().setCenter(newCenter);
                 toggleFollow(false);
                 break;
+            case "ArrowDown":
             case "s":
                 oldCenter = OLMap.getView().getCenter();
                 extent = OLMap.getView().calculateExtent(OLMap.getSize());
@@ -2099,6 +2611,7 @@ function initMap() {
                 OLMap.getView().setCenter(newCenter);
                 toggleFollow(false);
                 break;
+            case "ArrowLeft":
             case "a":
                 oldCenter = OLMap.getView().getCenter();
                 extent = OLMap.getView().calculateExtent(OLMap.getSize());
@@ -2106,6 +2619,7 @@ function initMap() {
                 OLMap.getView().setCenter(newCenter);
                 toggleFollow(false);
                 break;
+            case "ArrowRight":
             case "d":
                 oldCenter = OLMap.getView().getCenter();
                 extent = OLMap.getView().calculateExtent(OLMap.getSize());
@@ -2134,6 +2648,10 @@ function initMap() {
                 break;
             case "t":
                 selectAllPlanes();
+                break;
+            case "G":
+                nogpsOnly = !nogpsOnly;
+                refreshFilter();
                 break;
             case "h":
                 resetMap();
@@ -2194,12 +2712,12 @@ function initMap() {
                 break;
             case "D":
                 debug = !debug;
-                localStorage['debug'] = debug;
+                loStore['debug'] = debug;
                 console.log('debug = ' + debug);
                 break;
             case "P":
                 debugPosFilter = !debugPosFilter;
-                localStorage['debugPosFilter'] = debugPosFilter;
+                loStore['debugPosFilter'] = debugPosFilter;
                 console.log('debugPosFilter = ' + debugPosFilter);
                 break;
             case "?":
@@ -2216,35 +2734,57 @@ function initMap() {
                 break;
             case "J":
                 debugJump = !debugJump;
-                localStorage['debugJump'] = debugJump;
+                loStore['debugJump'] = debugJump;
                 console.log('debugJump = ' + debugJump);
                 break;
             case "N":
                 noMLAT = !noMLAT;
-                localStorage['noMLAT'] = noMLAT;
+                loStore['noMLAT'] = noMLAT;
                 console.log('noMLAT = ' + noMLAT);
                 break;
         }
     }, true);
 
-    geoFindMe();
+
+    if (!usp.has('icao')
+        && !usp.has("lat") && !usp.has("lon")
+        && !usp.has('airport')
+    ) {
+        runAfterLoad(geoFindMe);
+    } else {
+        runAfterLoad(initSitePos);
+    }
+
 }
 
-// This looks for planes to reap out of the master Planes variable
+// This looks for planes to reap out of the master g.planes variable
 let lastReap = 0;
+let reapInProgress = false;
 function reaper(all) {
     //console.log("Reaping started..");
-    today = new Date().getDate();
-    if (noVanish)
+
+    if (reapInProgress) {
         return;
+    }
 
     lastReap = now;
 
+    if (noVanish && !all) {
+        return;
+    }
+
+    reapInProgress = true;
+
+    if (!all) {
+        releaseMem();
+    }
+
     // Look for planes where we have seen no messages for >300 seconds
     let plane;
-    let length = PlanesOrdered.length;
-    for (let i = 0; i < length; i++) {
-        plane = PlanesOrdered.shift()
+    let length = g.planesOrdered.length;
+    let temp = []
+    for (let i in g.planesOrdered) {
+        plane = g.planesOrdered[i];
         if (plane == null)
             continue;
         plane.seen = now - plane.last_message_time;
@@ -2254,16 +2794,35 @@ function reaper(all) {
         ) {
             // Reap it.
             //console.log("Removed " + plane.icao);
-            delete Planes[plane.icao];
+            delete g.planes[plane.icao];
             plane.destroy();
-        } else {
-            // Keep it.
-            PlanesOrdered.push(plane);
+            continue;
         }
-    };
 
-    //console.log(length - PlanesOrdered.length);
-    return (length - PlanesOrdered.length);
+        // Keep it.
+        temp.push(plane);
+
+        if (globeIndex) {
+            if (plane.clearTraceAfter) {
+                //console.log(now - plane.clearTraceAfter);
+                if (now > plane.clearTraceAfter) {
+                    plane.clearTrace();
+                    //console.log("clearTrace: " + plane.icao);
+                }
+            } else if (!plane.linesDrawn) {
+                plane.clearTraceAfter = now + 300;
+            }
+        }
+    }
+    g.planesOrdered = temp;
+
+    reapInProgress = false;
+    const removed = length - g.planesOrdered.length;
+    if (removed > 0) {
+        //console.log(`reaper removed ${removed} planes.`);
+    }
+
+    return removed;
 }
 
 // Page Title update function
@@ -2314,24 +2873,25 @@ function displayPhoto() {
         displaySil();
         return;
     }
-    let photos = SelectedPlane.psAPIresponse["photos"];
+    let photos = SelectedPlane.psAPIresponse["photos"] || SelectedPlane.psAPIresponse["images"];
     if (!photos || photos.length == 0) {
         displaySil();
         adjustInfoBlock();
         return;
     }
     let new_html="";
-    let photoToPull = photos[0]["thumbnail"]["src"];
+    let photoToPull = photos[0]["thumbnail"]["src"] || photos[0]["thumbnail"];
     let linkToPicture = photos[0]["link"];
     //console.log(linkToPicture);
     new_html = '<a class=\"link\" href="'+linkToPicture+'" target="_blank" rel="noopener noreferrer"><img id="airplanePhoto" src=' +photoToPull+'></a>';
-    jQuery('#copyrightInfo').html("<span>Image © " + photos[0]["photographer"]+"</span>");
+    let copyright = photos[0]["photographer"] || photos[0]["user"];
+    jQuery('#copyrightInfo').html("<span>Image © " + copyright +"</span>");
     setPhotoHtml(new_html);
     adjustInfoBlock();
 }
 
 function refreshPhoto(selected) {
-    if (!showPictures || !planespottersAPI || selected.icao[0] == '~') {
+    if (!showPictures || selected.icao[0] == '~' || (!planespottingAPI && !planespottersAPI)) {
         displaySil();
         return;
     }
@@ -2340,13 +2900,14 @@ function refreshPhoto(selected) {
     if (!selected.dbinfoLoaded) {
         displaySil();
         return;
-    } else if (selected.registration != null && selected.registration.match(/^[0-9]{0,2}\+?[0-9]{0,2}$/)) {
-        displaySil();
-        return;
+    } else if (false && selected.registration != null && selected.registration.match(/^[0-9]{0,2}\+?[0-9]{0,2}$/)) {
+        urlTail = '/hex/' + selected.icao.toUpperCase();
     } else if (selected.registration != null) {
         urlTail = '/hex/' + selected.icao.toUpperCase() + '?reg=' + selected.registration;
-        if (selected.icaoType) {
-            urlTail += '&icaoType=' + selected.icaoType;
+        const type = selected.icaoType;
+        // && type != 'E170' && !type.startsWith('E75')
+        if (type) {
+            urlTail += '&icaoType=' + type;
         }
         param = 'DB';
     } else {
@@ -2371,18 +2932,40 @@ function refreshPhoto(selected) {
     jQuery('#copyrightInfo').html("<span></span>");
     //console.log(ts/1000 + 'sending psAPI request');
     selected.psAPIresponseTS = ts;
-    let req = jQuery.ajax({
-        url: 'https://api.planespotters.net/pub/photos/' + urlTail,
-        dataType: 'json',
-        plane: selected,
-    });
 
-    req.done(function(data) {
-        this.plane.psAPIresponse = data;
-        if (SelectedPlane == this.plane) {
-            displayPhoto();
-        }
-    });
+    if (planespottersAPI) {
+        let req = jQuery.ajax({
+            url: 'https://api.planespotters.net/pub/photos/' + urlTail,
+            dataType: 'json',
+            plane: selected,
+        });
+
+        req.done(function(data) {
+            this.plane.psAPIresponse = data;
+            if (SelectedPlane == this.plane) {
+                displayPhoto();
+            }
+        });
+    } else if (planespottingAPI) {
+        let req = jQuery.ajax({
+            url: 'https://www.planespotting.be/api/objects/imagesRegistration.php?registration=' + selected.registration,
+            dataType: 'json',
+            plane: selected,
+        });
+
+        req.done(function(data) {
+            this.plane.psAPIresponse = data;
+            if (SelectedPlane == this.plane) {
+                displayPhoto();
+            }
+        });
+        req.fail(function() {
+            this.plane.psAPIresponse = {'photos': []};
+            if (SelectedPlane == this.plane) {
+                displayPhoto();
+            }
+        });
+    }
 }
 
 let selCall = null;
@@ -2405,12 +2988,22 @@ function refreshSelected() {
     somethingSelected = true;
     buttonActive('#F', FollowSelected);
 
-    selected.checkVisible();
+    selected.updateVisible();
     selected.checkForDB();
 
     refreshPhoto(selected);
 
-    jQuery('#selected_callsign').text(selected.name);
+    jQuery('#selected_callsign').updateText(selected.name);
+
+    if (showTrace) {
+        if (selected.position_time) {
+            const date = new Date(selected.position_time * 1000);
+            let timestamp = utcTimesHistoric ? (zuluTime(date) + NBSP + 'Z') : (lDateString(date) + ' ' + localTime(date) + NBSP + TIMEZONE);
+            jQuery('#trace_time').updateText('Time:\n' + timestamp);
+        } else {
+            jQuery('#trace_time').updateText('Time:\n');
+        }
+    }
 
     if (flightawareLinks) {
         jQuery('#selected_flightaware_link').html(getFlightAwareModeSLink(selected.icao, selected.flight, "Visit Flight Page"));
@@ -2429,6 +3022,7 @@ function refreshSelected() {
         jQuery('#anon_mlat_info').addClass('hidden');
         jQuery('#reg_info').removeClass('hidden');
     }
+
     let checkReg = selected.registration + ' ' + selected.dbinfoLoaded;
     if (checkReg != selReg) {
         selReg = checkReg;
@@ -2438,34 +3032,34 @@ function refreshSelected() {
             } else if (registrationLinks && registrationLink(selected)) {
                 jQuery('#selected_registration').html(`<a class="link" target="_blank" href="${registrationLink(selected)}">${selected.registration}</a>`);
             } else {
-                jQuery('#selected_registration').text(selected.registration);
+                jQuery('#selected_registration').updateText(selected.registration);
             }
         } else {
-            jQuery('#selected_registration').text("n/a");
+            jQuery('#selected_registration').updateText("n/a");
         }
     }
     let dbFlags = "";
     if (selected.ladd)
-        dbFlags += ' <a class="link" target="_blank" href="https://ladd.faa.gov/" rel="noreferrer">LADD</a> / ';
+        dbFlags += ' <a class="link" target="_blank" href="https://www.faa.gov/pilots/ladd/" rel="noreferrer">LADD</a> / ';
     if (selected.pia)
-        dbFlags += '<a class="link" target="_blank" href="https://www.faa.gov/nextgen/equipadsb/privacy/" rel="noreferrer">PIA</a> / ';
+        dbFlags += '<a class="link" target="_blank" href="https://www.faa.gov/air_traffic/technology/equipadsb/privacy/" rel="noreferrer">PIA</a> / ';
     if (selected.military)
         dbFlags += 'military / ';
     if (dbFlags.length == 0) {
-        jQuery('#selected_dbFlags').text("none");
+        jQuery('#selected_dbFlags').updateText("none");
     } else {
         jQuery('#selected_dbFlags').html(dbFlags.slice(0, -3));
     }
 
     if (selected.icaoType) {
-        jQuery('#selected_icaotype').text(selected.icaoType);
+        jQuery('#selected_icaotype').updateText(selected.icaoType);
     } else {
-        jQuery('#selected_icaotype').text("n/a");
+        jQuery('#selected_icaotype').updateText("n/a");
     }
     if (selected.typeDescription)
-        jQuery('#selected_typedesc').text(selected.typeDescription);
+        jQuery('#selected_typedesc').updateText(selected.typeDescription);
     else
-        jQuery('#selected_typedesc').text("n/a");
+        jQuery('#selected_typedesc').updateText("n/a");
 
     let typeLine = "";
     if (selected.year)
@@ -2475,26 +3069,32 @@ function refreshSelected() {
     if (!typeLine)
         typeLine = "n/a"
 
-    jQuery('#selected_typelong').text(typeLine);
+    jQuery('#selected_typelong').updateText(typeLine);
 
     if (selected.ownOp)
-        jQuery('#selected_ownop').text(selected.ownOp);
+        jQuery('#selected_ownop').updateText(selected.ownOp);
     else
-        jQuery('#selected_ownop').text("");
+        jQuery('#selected_ownop').updateText("");
+
+    if (selected.rId && show_rId) {
+        jQuery('#receiver_id').updateText(selected.rId);
+        jQuery('#receiver_id_div').removeClass('hidden');
+    } else {
+        jQuery('#receiver_id_div').addClass('hidden');
+    }
 
 
+    jQuery("#selected_altitude1").updateText(format_altitude_long(selected.altitude, selected.vert_rate, DisplayUnits));
+    jQuery("#selected_altitude2").updateText(format_altitude_long(selected.altitude, selected.vert_rate, DisplayUnits));
 
-    jQuery("#selected_altitude1").text(format_altitude_long(selected.altitude, selected.vert_rate, DisplayUnits));
-    jQuery("#selected_altitude2").text(format_altitude_long(selected.altitude, selected.vert_rate, DisplayUnits));
-
-    jQuery('#selected_onground').text(format_onground(selected.altitude));
+    jQuery('#selected_onground').updateText(format_onground(selected.altitude));
 
     if (selected.squawk == null || selected.squawk == '0000') {
-        jQuery('#selected_squawk1').text('n/a');
-        jQuery('#selected_squawk2').text('n/a');
+        jQuery('#selected_squawk1').updateText('n/a');
+        jQuery('#selected_squawk2').updateText('n/a');
     } else {
-        jQuery('#selected_squawk1').text(selected.squawk);
-        jQuery('#selected_squawk2').text(selected.squawk);
+        jQuery('#selected_squawk1').updateText(selected.squawk);
+        jQuery('#selected_squawk2').updateText(selected.squawk);
     }
 
     let magResult = null;
@@ -2504,9 +3104,9 @@ function refreshSelected() {
         let lat = selected.position[1];
         let alt = selected.altitude == "ground" ? 0 : selected.altitude;
         magResult = geoMag(lat, lon, alt);
-        jQuery('#selected_mag_declination').text(format_track_brief(magResult.dec));
+        jQuery('#selected_mag_declination').updateText(format_track_brief(magResult.dec));
     } else {
-        jQuery('#selected_mag_declination').text('n/a');
+        jQuery('#selected_mag_declination').updateText('n/a');
     }
 
     let heading = null;
@@ -2520,11 +3120,11 @@ function refreshSelected() {
     if (heading != null && heading > 360)
         heading -= 360;
 
-    jQuery('#selected_mag_heading').text(format_track_brief(selected.mag_heading));
+    jQuery('#selected_mag_heading').updateText(format_track_brief(selected.mag_heading));
 
     if (selected.wd != null && selected.ws != null) {
-        jQuery('#selected_wd').text(format_track_brief(selected.wd, true));
-        jQuery('#selected_ws').text(format_speed_long(selected.ws, DisplayUnits));
+        jQuery('#selected_wd').updateText(format_track_brief(selected.wd, true));
+        jQuery('#selected_ws').updateText(format_speed_long(selected.ws, DisplayUnits));
     } else if (!globeIndex && magResult && selected.gs != null && selected.tas != null && selected.track != null && selected.mag_heading != null) {
 
         const trk = (Math.PI / 180) * selected.track;
@@ -2540,18 +3140,18 @@ function refreshSelected() {
             wd = wd - 2 * Math.PI;
         }
         wd = Math.round((180 / Math.PI) * wd);
-        jQuery('#selected_wd').text(format_track_brief(wd, true));
-        jQuery('#selected_ws').text(format_speed_long(ws, DisplayUnits));
+        jQuery('#selected_wd').updateText(format_track_brief(wd, true));
+        jQuery('#selected_ws').updateText(format_speed_long(ws, DisplayUnits));
     } else {
-        jQuery('#selected_wd').text('n/a');
-        jQuery('#selected_ws').text('n/a');
+        jQuery('#selected_wd').updateText('n/a');
+        jQuery('#selected_ws').updateText('n/a');
     }
 
 
     if (!globeIndex && selected.true_heading == null && heading != null)
-        jQuery('#selected_true_heading').text(format_track_brief(heading));
+        jQuery('#selected_true_heading').updateText(format_track_brief(heading));
     else
-        jQuery('#selected_true_heading').text(format_track_brief(selected.true_heading));
+        jQuery('#selected_true_heading').updateText(format_track_brief(selected.true_heading));
 
 
     let oat = null;
@@ -2567,140 +3167,141 @@ function refreshSelected() {
 
 
     if (oat != null)
-        jQuery('#selected_temp').text(Math.round(tat) + ' / ' + Math.round(oat)  + ' °C');
+        jQuery('#selected_temp').updateText(Math.round(tat) + ' / ' + Math.round(oat)  + ' °C');
     else
-        jQuery('#selected_temp').text('n/a');
+        jQuery('#selected_temp').updateText('n/a');
 
-    jQuery('#selected_speed1').text(format_speed_long(selected.gs, DisplayUnits));
-    jQuery('#selected_speed2').text(format_speed_long(selected.gs, DisplayUnits));
-    jQuery('#selected_ias').text(format_speed_long(selected.ias, DisplayUnits));
-    jQuery('#selected_tas').text(format_speed_long(selected.tas, DisplayUnits));
-    jQuery('#selected_vert_rate').text(format_vert_rate_long(selected.vert_rate, DisplayUnits));
-    jQuery('#selected_baro_rate').text(format_vert_rate_long(selected.baro_rate, DisplayUnits));
-    jQuery('#selected_geom_rate').text(format_vert_rate_long(selected.geom_rate, DisplayUnits));
-    if (selected.icao != selIcao) {
-        selIcao = selected.icao;
-        let hex_html = "<span style='font-family: monospace;' class=identSmall>Hex:" + NBSP + selected.icao.toUpperCase() + "</span>";
-        if (globeIndex) {
-            let icao_link = "<span  class=identSmall><a class='link identSmall' target=\"_blank\" href=\"" + shareLink + "\">Share</a></span>";
-            hex_html = hex_html + NBSP + NBSP + NBSP + icao_link;
-        }
-        jQuery('#selected_icao').html(hex_html);
-    }
-    jQuery('#selected_pf_info').text((selected.pfRoute ? selected.pfRoute : "") );
+    jQuery('#selected_speed1').updateText(format_speed_long(selected.gs, DisplayUnits));
+    jQuery('#selected_speed2').updateText(format_speed_long(selected.gs, DisplayUnits));
+    jQuery('#selected_ias').updateText(format_speed_long(selected.ias, DisplayUnits));
+    jQuery('#selected_tas').updateText(format_speed_long(selected.tas, DisplayUnits));
+    jQuery('#selected_vert_rate').updateText(format_vert_rate_long(selected.vert_rate, DisplayUnits));
+    jQuery('#selected_baro_rate').updateText(format_vert_rate_long(selected.baro_rate, DisplayUnits));
+    jQuery('#selected_geom_rate').updateText(format_vert_rate_long(selected.geom_rate, DisplayUnits));
+
+    setSelectedIcao();
+
+    jQuery('#selected_pf_info').updateText((selected.pfRoute ? selected.pfRoute : "") );
     //+" "+ (selected.pfFlightno ? selected.pfFlightno : "")
     jQuery('#airframes_post_icao').attr('value',selected.icao);
-    jQuery('#selected_track1').text(format_track_brief(selected.track));
-    jQuery('#selected_track2').text(format_track_brief(selected.track));
+    jQuery('#selected_track1').updateText(format_track_brief(selected.track));
+    jQuery('#selected_track2').updateText(format_track_brief(selected.track));
 
     if (selected.seen != null && selected.seen < 1000000) {
-        jQuery('#selected_seen').text(format_duration(selected.seen));
+        jQuery('#selected_seen').updateText(format_duration(selected.seen));
     } else {
-        jQuery('#selected_seen').text('n/a');
+        jQuery('#selected_seen').updateText('n/a');
     }
-
+    if (selected.position_time != null) {
+        jQuery('#selected_pos_epoch').updateText(Math.round(selected.position_time));
+    } else {
+        jQuery('#selected_pos_epoch').updateText('n/a');
+    }
     if (selected.seen_pos != null && selected.seen_pos < 1000000) {
-        jQuery('#selected_seen_pos').text(format_duration(selected.seen_pos));
+        jQuery('#selected_seen_pos').updateText(format_duration(selected.seen_pos));
     } else {
-        jQuery('#selected_seen_pos').text('n/a');
+        jQuery('#selected_seen_pos').updateText('n/a');
     }
 
-    jQuery('#selected_country').text(selected.icaorange.country.replace("special use", "special"));
-    if (ShowFlags && selected.icaorange.flag_image !== null) {
+    jQuery('#selected_country').updateText(selected.country.replace("special use", "special"));
+    if (ShowFlags && selected.flag_image !== null) {
         jQuery('#selected_flag').removeClass('hidden');
-        jQuery('#selected_flag img').attr('src', FlagPath + selected.icaorange.flag_image);
-        jQuery('#selected_flag img').attr('title', selected.icaorange.country);
+        jQuery('#selected_flag img').attr('src', FlagPath + selected.flag_image);
+        jQuery('#selected_flag img').attr('title', selected.country);
     } else {
         jQuery('#selected_flag').addClass('hidden');
     }
 
     if (selected.position == null) {
-        jQuery('#selected_position').text('n/a');
+        jQuery('#selected_position').updateText('n/a');
     } else {
 
         if (selected.seen_pos > -1) {
-            jQuery('#selected_position').text(format_latlng(selected.position));
+            jQuery('#selected_position').updateText(format_latlng(selected.position));
         } else {
-            jQuery('#selected_position').text(format_latlng(selected.position));
+            jQuery('#selected_position').updateText(format_latlng(selected.position));
         }
     }
+    let sitedist;
     if (selected.position && SitePosition) {
-        selected.sitedist = ol.sphere.getDistance(SitePosition, selected.position);
+        sitedist = ol.sphere.getDistance(SitePosition, selected.position);
     }
-    jQuery('#selected_source').text(format_data_source(selected.dataSource));
-    jQuery('#selected_category').text(selected.category ? selected.category : "n/a");
-    jQuery('#selected_sitedist1').text(format_distance_long(selected.sitedist, DisplayUnits));
-    jQuery('#selected_sitedist2').text(format_distance_long(selected.sitedist, DisplayUnits));
-    jQuery('#selected_rssi1').text(selected.rssi != null ? selected.rssi.toFixed(1) : "n/a");
+    jQuery('#selected_source').updateText(format_data_source(selected.dataSource));
+    jQuery('#selected_category').updateText(selected.category ? selected.category : "n/a");
+    jQuery('#selected_category_label').updateText(get_category_label(selected.category));
+    jQuery('#selected_sitedist1').updateText(format_distance_long(sitedist, DisplayUnits));
+    jQuery('#selected_sitedist2').updateText(format_distance_long(sitedist, DisplayUnits));
+    jQuery('#selected_rssi1').updateText(selected.rssi != null ? selected.rssi.toFixed(1) : "n/a");
     if (globeIndex && binCraft && !showTrace) {
-        jQuery('#selected_message_count').prev().text('Receivers:');
+        jQuery('#selected_message_count').prev().updateText('Receivers:');
         jQuery('#selected_message_count').prop('title', 'Number of receivers receiving this aircraft');
         if (selected.receiverCount >= 5 && selected.dataSource != 'mlat') {
-            jQuery('#selected_message_count').text('> ' + selected.receiverCount);
+            jQuery('#selected_message_count').updateText('> ' + selected.receiverCount);
         } else {
-            jQuery('#selected_message_count').text(selected.receiverCount);
+            jQuery('#selected_message_count').updateText(selected.receiverCount);
         }
     } else {
-        jQuery('#selected_message_count').prev().text('Messages:');
+        jQuery('#selected_message_count').prev().updateText('Messages:');
         jQuery('#selected_message_count').prop('title', 'The total number of messages received from this aircraft');
-        jQuery('#selected_message_count').text(selected.messages);
+        jQuery('#selected_message_count').updateText(selected.messages);
     }
-    jQuery('#selected_message_rate').text((selected.messageRate != null) ? (selected.messageRate.toFixed(1)) : "n/a");
+    jQuery('#selected_message_rate').updateText((selected.messageRate != null) ? (selected.messageRate.toFixed(1)) : "n/a");
     jQuery('#selected_photo_link').html(getPhotoLink(selected));
 
-    jQuery('#selected_altitude_geom').text(format_altitude_long(selected.alt_geom, selected.geom_rate, DisplayUnits));
-    jQuery('#selected_ias').text(format_speed_long(selected.ias, DisplayUnits));
-    jQuery('#selected_tas').text(format_speed_long(selected.tas, DisplayUnits));
+    jQuery('#selected_altitude_geom1').updateText(format_altitude_long(adjust_geom_alt(selected.alt_geom, selected.position), selected.geom_rate, DisplayUnits));
+    jQuery('#selected_altitude_geom2').updateText(format_altitude_long(adjust_geom_alt(selected.alt_geom, selected.position), selected.geom_rate, DisplayUnits));
+    jQuery('#selected_ias').updateText(format_speed_long(selected.ias, DisplayUnits));
+    jQuery('#selected_tas').updateText(format_speed_long(selected.tas, DisplayUnits));
     if (selected.mach == null) {
-        jQuery('#selected_mach').text('n/a');
+        jQuery('#selected_mach').updateText('n/a');
     } else {
-        jQuery('#selected_mach').text(selected.mach.toFixed(3));
+        jQuery('#selected_mach').updateText(selected.mach.toFixed(3));
     }
     if (selected.roll == null) {
-        jQuery('#selected_roll').text('n/a');
+        jQuery('#selected_roll').updateText('n/a');
     } else {
-        jQuery('#selected_roll').text(selected.roll.toFixed(1));
+        jQuery('#selected_roll').updateText(selected.roll.toFixed(1));
     }
     if (selected.track_rate == null) {
-        jQuery('#selected_trackrate').text('n/a');
+        jQuery('#selected_trackrate').updateText('n/a');
     } else {
-        jQuery('#selected_trackrate').text(selected.track_rate.toFixed(2));
+        jQuery('#selected_trackrate').updateText(selected.track_rate.toFixed(2));
     }
-    jQuery('#selected_geom_rate').text(format_vert_rate_long(selected.geom_rate, DisplayUnits));
+    jQuery('#selected_geom_rate').updateText(format_vert_rate_long(selected.geom_rate, DisplayUnits));
     if (selected.nav_qnh == null) {
-        jQuery('#selected_nav_qnh').text("n/a");
+        jQuery('#selected_nav_qnh').updateText("n/a");
     } else {
-        jQuery('#selected_nav_qnh').text(selected.nav_qnh.toFixed(1) + " hPa");
+        jQuery('#selected_nav_qnh').updateText(selected.nav_qnh.toFixed(1) + " hPa");
     }
-    jQuery('#selected_nav_altitude').text(format_altitude_long(selected.nav_altitude, 0, DisplayUnits));
-    jQuery('#selected_nav_heading').text(format_track_brief(selected.nav_heading));
+    jQuery('#selected_nav_altitude').updateText(format_altitude_long(selected.nav_altitude, 0, DisplayUnits));
+    jQuery('#selected_nav_heading').updateText(format_track_brief(selected.nav_heading));
     if (selected.nav_modes == null) {
-        jQuery('#selected_nav_modes').text("n/a");
+        jQuery('#selected_nav_modes').updateText("n/a");
     } else {
-        jQuery('#selected_nav_modes').text(selected.nav_modes.join());
+        jQuery('#selected_nav_modes').updateText(selected.nav_modes.join());
     }
     if (selected.nic_baro == null) {
-        jQuery('#selected_nic_baro').text("n/a");
+        jQuery('#selected_nic_baro').updateText("n/a");
     } else {
         if (selected.nic_baro == 1) {
-            jQuery('#selected_nic_baro').text("cross-checked");
+            jQuery('#selected_nic_baro').updateText("cross-checked");
         } else {
-            jQuery('#selected_nic_baro').text("not cross-checked");
+            jQuery('#selected_nic_baro').updateText("not cross-checked");
         }
     }
 
-    jQuery('#selected_nac_p').text(format_nac_p(selected.nac_p));
-    jQuery('#selected_nac_v').text(format_nac_v(selected.nac_v));
+    jQuery('#selected_nac_p').updateText(format_nac_p(selected.nac_p));
+    jQuery('#selected_nac_v').updateText(format_nac_v(selected.nac_v));
     if (selected.rc == null) {
-        jQuery('#selected_rc').text("n/a");
+        jQuery('#selected_rc').updateText("n/a");
     } else if (selected.rc == 0) {
-        jQuery('#selected_rc').text("unknown");
+        jQuery('#selected_rc').updateText("unknown");
     } else {
-        jQuery('#selected_rc').text(format_distance_short(selected.rc, DisplayUnits));
+        jQuery('#selected_rc').updateText(format_distance_short(selected.rc, DisplayUnits));
     }
 
     if (selected.sil == null || selected.sil_type == null) {
-        jQuery('#selected_sil').text("n/a");
+        jQuery('#selected_sil').updateText("n/a");
     } else {
         let sampleRate = "";
         let silDesc = "";
@@ -2732,15 +3333,15 @@ function refreshSelected() {
     }
 
     if (selected.version == null) {
-        jQuery('#selected_version').text('none');
+        jQuery('#selected_version').updateText('none');
     } else if (selected.version == 0) {
-        jQuery('#selected_version').text('v0 (DO-260)');
+        jQuery('#selected_version').updateText('v0 (DO-260)');
     } else if (selected.version == 1) {
-        jQuery('#selected_version').text('v1 (DO-260A)');
+        jQuery('#selected_version').updateText('v1 (DO-260A)');
     } else if (selected.version == 2) {
-        jQuery('#selected_version').text('v2 (DO-260B)');
+        jQuery('#selected_version').updateText('v2 (DO-260B)');
     } else {
-        jQuery('#selected_version').text('v' + selected.version);
+        jQuery('#selected_version').updateText('v' + selected.version);
     }
 
     adjustInfoBlock();
@@ -2777,14 +3378,22 @@ function refreshHighlighted() {
         return;
 
     let mapSize = OLMap.getSize();
-    if (markerPosition[0] + 200 < mapSize[0])
-        infoBox.css("left", markerPosition[0] + 20);
+    let infoBoxLeft = markerPosition[0];
+    let infoBoxTop = markerPosition[1];
+    if ((infoBoxLeft + 20 + infoBox.width()) < mapSize[0])
+        infoBoxLeft += 20;
+    else if ((infoBoxLeft - 20 - infoBox.width()) > 0)
+        infoBoxLeft -= (20 + infoBox.width());
     else
-        infoBox.css("left", markerPosition[0] - 200);
-    if (markerPosition[1] + 250 < mapSize[1])
-        infoBox.css("top", markerPosition[1] + 50);
+        infoBoxLeft = 0;
+    if ((infoBoxTop + 20 + infoBox.height()) < mapSize[1])
+        infoBoxTop += 20;
+    else if (infoBoxTop - (20 + infoBox.height()) > 0)
+        infoBoxTop -= (20 + infoBox.height());
     else
-        infoBox.css("top", markerPosition[1] - 250);
+        infoBoxTop = 0;
+    infoBox.css("left", infoBoxLeft);
+    infoBox.css("top", infoBoxTop);
 
     jQuery('#highlighted_callsign').text(highlighted.name);
 
@@ -2816,14 +3425,48 @@ function removeHighlight() {
     refreshHighlighted();
 }
 
+function mstime() {
+    return new Date().getTime();
+}
+
+// recreating all OpenLayers Features for the planes every now and then releases some retained memory
+// Haven't been able to create a reproducer ... regardless let's stick with this workaround
+// in other words: probably not an issue with OpenLayers.
+
+let nextCacheClear = mstime() + 300 * 1000;
+
+function releaseMem() {
+
+    if (mstime() > nextCacheClear) {
+        nextCacheClear = mstime() + 300 * 1000;
+        lineStyleCache = {};
+        iconCache = {};
+    }
+
+    //console.trace();
+    //console.log('releaseMem()');
+    for (let i in g.planesOrdered) {
+        let plane = g.planesOrdered[i];
+        plane.clearMarker();
+        plane.destroyTR();
+    }
+    refreshFeatures();
+    TAR.planeMan.redraw();
+    refresh();
+}
+
 function refreshFeatures() {
-    for (let i in PlanesOrdered) {
-        PlanesOrdered[i].updateFeatures(true);
+    if (!loadFinished) {
+        return;
+    }
+    updateVisible();
+    for (let i in g.planesOrdered) {
+        g.planesOrdered[i].updateFeatures(true);
     }
 }
 
 //
-// Planes table begin
+// g.planes table begin
 //
 (function (global, jQuery, TAR) {
     let planeMan = TAR.planeMan = TAR.planeMan || {};
@@ -2856,7 +3499,7 @@ function refreshFeatures() {
     const cols = planeMan.cols = {};
 
     cols.icao = {
-        text: 'Hex id',
+        text: 'Hex ID',
         sort: function () { sortBy('icao', compareAlpha, function(x) { return x.icao; }); },
         value: function(plane) { return plane.icao; },
         td: '<td class="icaoCodeColumn">',
@@ -2864,8 +3507,8 @@ function refreshFeatures() {
     cols.flag = {
         text: 'Flag',
         header: function() { return ""; },
-        sort: function () { sortBy('country', compareAlpha, function(x) { return x.icaorange.country; }); },
-        value: function(plane) { return (plane.icaorange.flag_image ? ('<img width="20" height="12" style="display: block;margin: auto;" src="' + FlagPath + plane.icaorange.flag_image + '" title="' + plane.icaorange.country + '"></img>') : ''); },
+        sort: function () { sortBy('country', compareAlpha, function(x) { return x.country; }); },
+        value: function(plane) { return (plane.flag_image ? ('<img width="20" height="12" style="display: block;margin: auto;" src="' + FlagPath + plane.flag_image + '" title="' + plane.country + '"></img>') : ''); },
         hStyle: 'style="width: 20px; padding: 3px;"',
         html: true,
     };
@@ -2874,7 +3517,7 @@ function refreshFeatures() {
         value: function(plane) {
             if (flightawareLinks)
                 return getFlightAwareModeSLink(plane.icao, plane.flight, plane.name);
-            return plane.name;
+            return (plane.flight || '');
         },
         html: flightawareLinks,
         text: 'Callsign' };
@@ -2897,14 +3540,14 @@ function refreshFeatures() {
         sort: function () { sortBy('altitude',compareNumeric, function(x) { return (x.altitude == "ground" ? -100000 : x.altitude); }); },
         value: function(plane) { return format_altitude_brief(plane.altitude, plane.vert_rate, DisplayUnits); },
         align: 'right',
-        header: function () { return 'Altitude(' + get_unit_label("altitude", DisplayUnits) + ')';},
+        header: function () { return 'Alt.' + NBSP + '(' + get_unit_label("altitude", DisplayUnits) + ')';},
     };
     cols.speed = {
         text: pTracks ? 'Max. Speed' : 'Speed',
         sort: function () { sortBy('speed', compareNumeric, function(x) { return x.speed; }); },
         value: function(plane) { return format_speed_brief(plane.speed, DisplayUnits); },
         align: 'right',
-        header: function () { return (pTracks ? 'Max. ' : '') + 'Spd(' + get_unit_label("speed", DisplayUnits) + ')';},
+        header: function () { return (pTracks ? 'Max. ' : '') + 'Spd.' + NBSP + '(' + get_unit_label("speed", DisplayUnits) + ')';},
     };
     cols.vert_rate = {
         text: 'Vertical Rate',
@@ -2918,7 +3561,7 @@ function refreshFeatures() {
         sort: function () { sortBy('sitedist',compareNumeric, function(x) { return x.sitedist; }); },
         value: function(plane) { return format_distance_brief(plane.sitedist, DisplayUnits); },
         align: 'right',
-        header: function () { return (pTracks ? 'Max. ' : '') + 'Dist.(' + get_unit_label("distance", DisplayUnits) + ')';},
+        header: function () { return (pTracks ? 'Max. ' : '') + 'Dist.' + NBSP + '(' + get_unit_label("distance", DisplayUnits) + ')';},
     };
     cols.track = {
         text: 'Track',
@@ -2952,9 +3595,26 @@ function refreshFeatures() {
         align: 'right' };
     cols.data_source = {
         text: 'Source',
-        sort: function () { sortBy('data_source', compareNumeric, function(x) { return x.getDataSourceNumber() } ); },
+        sort: function () { sortBy('data_source', compareNumeric, function(x) { return x.getDataSourceNumber(); } ); },
         value: function(plane) { return format_data_source(plane.getDataSource()); },
         align: 'right' };
+    cols.military = {
+        text: 'Mil.',
+        sort: function () { sortBy('military', compareAlpha, function(x) { return (x.military ? 'yes' : 'no'); } ); },
+        value: function(plane) { return (plane.military ? 'yes' : 'no'); },
+        align: 'right' };
+    cols.wd = {
+        text: 'Wind D.',
+        sort: function () { sortBy('wd', compareNumeric, function(x) { return plane.wd; }); },
+        value: function(plane) { return plane.wd != null ? (plane.wd + '°') : ''; },
+        align: 'right' };
+    cols.ws = {
+        text: 'Wind S.',
+        sort: function () { sortBy('ws', compareNumeric, function(x) { return x.ws; }); },
+        value: function(plane) { return format_speed_brief(plane.ws, DisplayUnits); },
+        align: 'right',
+        header: function () { return 'Wind' + NBSP + '(' + get_unit_label("speed", DisplayUnits) + ')'; },
+    };
 
     const colsEntries = Object.entries(cols);
     for (let i in colsEntries) {
@@ -2974,7 +3634,6 @@ function refreshFeatures() {
     let initializing = true;
 
     let planeRowTemplate = null;
-    planeMan.lastRenderExtent = null;
     let htmlTable = null;
     let tbody = null;
 
@@ -3009,8 +3668,8 @@ function refreshFeatures() {
                 activeCols.push(col);
             }
         }
-        for (let i = 0; i < PlanesOrdered.length; ++i) {
-            PlanesOrdered[i].destroyTR();
+        for (let i = 0; i < g.planesOrdered.length; ++i) {
+            g.planesOrdered[i].destroyTR();
         }
         let table = '';
         table += '<thead class="aircraft_table_header">';
@@ -3056,29 +3715,21 @@ function refreshFeatures() {
         ctime && console.time("planeMan.refresh()");
 
 
-        if (mapIsVisible || planeMan.lastRenderExtent === null) {
-            const size = [OLMap.getSize()[0] + 45, OLMap.getSize()[1] + 45];
-            planeMan.lastRenderExtent = myExtent(OLMap.getView().calculateExtent(size));
-        }
-
         TrackedAircraft = 0;
         TrackedAircraftPositions = 0;
         TrackedHistorySize = 0;
 
         ctime && console.time("inView");
         let pList = []; // list of planes that might go in the table and need sorting
-        for (let i = 0; i < PlanesOrdered.length; ++i) {
-            const plane = PlanesOrdered[i];
-
-            plane.visible = plane.checkVisible() && !plane.isFiltered()
-            plane.inView = plane.visible && inView(plane.position, planeMan.lastRenderExtent);
+        for (let i = 0; i < g.planesOrdered.length; ++i) {
+            const plane = g.planesOrdered[i];
 
             TrackedHistorySize += plane.history_size;
 
             if (tableInView) {
                 if (plane.visible)
                     TrackedAircraft++;
-                if (plane.inView || plane.selected) {
+                if ((plane.inView && plane.visible) || plane.selected) {
                     pList.push(plane);
                     TrackedAircraftPositions++;
                 }
@@ -3091,6 +3742,7 @@ function refreshFeatures() {
                 }
             }
         }
+
         ctime && console.timeEnd("inView");
 
         ctime && console.time("resortTable");
@@ -3113,11 +3765,11 @@ function refreshFeatures() {
             if (plane.tr == null) {
                 plane.makeTR(planeRowTemplate.cloneNode(true));
                 plane.tr.id = plane.icao;
-                plane.refreshTR = true;
+                plane.refreshTR = 0;
             }
 
-            if (plane.refreshTR || plane.selected != plane.selectCache) {
-                plane.refreshTR = false;
+            if (now - plane.refreshTR > 5 || plane.selected != plane.selectCache) {
+                plane.refreshTR = now;
                 let colors = tableColors.unselected;
                 let bgColor = "#F8F8F8"
 
@@ -3156,10 +3808,10 @@ function refreshFeatures() {
         ctime && console.timeEnd("modTRs");
 
         global.refreshPageTitle();
-        jQuery('#dump1090_total_history').text(TrackedHistorySize);
-        jQuery('#dump1090_message_rate').text(MessageRate === null ? 'n/a' : MessageRate.toFixed(1));
-        jQuery('#dump1090_total_ac').text(globeIndex ? globeTrackedAircraft : TrackedAircraft);
-        jQuery('#dump1090_total_ac_positions').text(TrackedAircraftPositions);
+        jQuery('#dump1090_total_history').updateText(TrackedHistorySize);
+        jQuery('#dump1090_message_rate').updateText(MessageRate === null ? 'n/a' : MessageRate.toFixed(1));
+        jQuery('#dump1090_total_ac').updateText(globeIndex ? globeTrackedAircraft : TrackedAircraft);
+        jQuery('#dump1090_total_ac_positions').updateText(TrackedAircraftPositions);
 
 
 
@@ -3175,6 +3827,7 @@ function refreshFeatures() {
         ctime && console.time("DOM2");
 
         htmlTable.replaceChild(newBody, tbody);
+        tbody.remove();
         tbody = newBody;
 
         ctime && console.timeEnd("DOM2");
@@ -3287,7 +3940,7 @@ function refreshFeatures() {
 
         if (id === sortId) {
             sortAscending = !sortAscending;
-            PlanesOrdered.reverse(); // this correctly flips the order of rows that compare equal
+            g.planesOrdered.reverse(); // this correctly flips the order of rows that compare equal
         } else {
             sortAscending = true;
         }
@@ -3312,7 +3965,7 @@ function refreshFeatures() {
                     order.push(jQuery(this).attr('id').replace(prefix, ''));
                 });
 
-                localStorage['columnOrder'] = JSON.stringify(order);
+                loStore['columnOrder'] = JSON.stringify(order);
                 columns = createOrderedColumns();
 
                 planeMan.redraw();
@@ -3335,7 +3988,7 @@ function refreshFeatures() {
     }
 
     function createOrderedColumns() {
-        const order = localStorage['columnOrder'];
+        const order = loStore['columnOrder'];
         if (order !== undefined) {
             const columns = [];
             for (let col of JSON.parse(order)) {
@@ -3354,28 +4007,37 @@ function refreshFeatures() {
     return TAR;
 }(window, jQuery, TAR || {}));
 //
-// Planes table end
+// g.planes table end
 //
 
+let lastSelected = null;
 function deselect(plane) {
     if (!plane || !plane.selected)
         return;
     plane.selected = false;
     const index = SelPlanes.indexOf(plane);
-    if (index > -1)
+    if (index > -1) {
         SelPlanes.splice(index, 1);
+    }
+    lastSelected = plane;
     if (plane == SelectedPlane) {
-        sp = SelectedPlane = null;
+        if (SelPlanes.length > 0) {
+            sp = SelectedPlane = SelPlanes[0];
+        } else {
+            sp = SelectedPlane = null;
+        }
         refreshSelected();
     }
 
     plane.updateTick('redraw');
+    updateAddressBar();
 }
 let scount = 0;
 function select(plane, options) {
     if (!plane)
         return;
     options = options || {};
+    //console.log("select()", plane.icao, options);
     plane.selected = true;
     if (!SelPlanes.includes(plane))
         SelPlanes.push(plane);
@@ -3396,8 +4058,8 @@ function select(plane, options) {
 
 function selectPlaneByHex(hex, options) {
     active();
-    //console.log("SELECTING", hex, options);
     options = options || {};
+    console.log(`SELECTING ${hex} follow: ${options.follow}`);
     //console.log("select: " + hex);
     // If SelectedPlane has something in it, clear out the selected
     if (SelectedAllPlanes) {
@@ -3406,10 +4068,13 @@ function selectPlaneByHex(hex, options) {
     // already selected plane
     let oldPlane = SelectedPlane;
     // plane to be selected
-    let newPlane = Planes[hex];
+    let newPlane = g.planes[hex];
 
-    if (!options.noFetch && globeIndex && hex)
+    const multiDeselect = multiSelect && newPlane && newPlane.selected && !onlySelected;
+
+    if (!options.noFetch && globeIndex && hex) {
         newPlane = getTrace(newPlane, hex, options);
+    }
 
     // If we are clicking the same plane, we are deselecting it unless noDeselect is specified
     if (oldPlane == newPlane && (options.noDeselect || showTrace)) {
@@ -3417,7 +4082,7 @@ function selectPlaneByHex(hex, options) {
     } else {
         if (multiSelect) {
             // multiSelect deselect
-            if (newPlane && newPlane.selected && !onlySelected) {
+            if (multiDeselect) {
                 deselect(newPlane);
                 newPlane = null;
                 hex = null;
@@ -3429,6 +4094,7 @@ function selectPlaneByHex(hex, options) {
                 oldPlane = null;
             }
             if (oldPlane == newPlane) {
+                console.log('oldplane == newplane');
                 deselect(newPlane);
                 oldPlane = null;
                 newPlane = null;
@@ -3452,6 +4118,8 @@ function selectPlaneByHex(hex, options) {
     }
 
     pTracks || TAR.planeMan.refresh();
+
+    return newPlane !== undefined;
 }
 
 // loop through the planes and mark them as selected to show the paths for all planes
@@ -3467,19 +4135,20 @@ function selectAllPlanes() {
     if (SelectedPlane)
         deselect(SelectedPlane);
 
-    toggleIsolation(false, "off");
+    toggleIsolation("off");
 
     SelectedAllPlanes = true;
 
-    if (globeIndex) {
-        for (let i in PlanesOrdered) {
-            let plane = PlanesOrdered[i];
-            plane.processTrace();
+    // disable this for the moment
+    if (0 && globeIndex) {
+        for (let i in g.planesOrdered) {
+            let plane = g.planesOrdered[i];
+            if (plane.visible && plane.inView) {
+                plane.processTrace();
+            }
         }
     }
     refreshFeatures();
-
-    jQuery('#selectall_checkbox').addClass('settingsCheckboxChecked');
 
     refreshSelected();
     refreshHighlighted();
@@ -3491,7 +4160,9 @@ function deselectAllPlanes(keepMain) {
     if (showTrace && !keepMain)
         return;
     if (!multiSelect && SelectedPlane)
-        toggleIsolation(false, "off");
+        toggleIsolation("off");
+
+    clearTimeout(getTraceTimeout);
 
     if (SelectedAllPlanes) {
         buttonActive('#T', false);
@@ -3545,21 +4216,19 @@ function resetMap() {
         CenterLon = DefaultCenterLon;
         CenterLat = DefaultCenterLat;
     }
-    // Reset localStorage values and map settings
-    localStorage['CenterLat'] = CenterLat
-    localStorage['CenterLon'] = CenterLon
-    //localStorage['ZoomLvl']   = ZoomLvl = DefaultZoomLvl;
+    // Reset loStore values and map settings
+    loStore['CenterLat'] = CenterLat
+    loStore['CenterLon'] = CenterLon
+    //loStore['zoomLvl']   = zoomLvl = DefaultZoomLvl;
 
     // Set and refresh
-    //OLMap.getView().setZoom(ZoomLvl);
+    //OLMap.getView().setZoom(zoomLvl);
     OLMap.getView().setCenter(ol.proj.fromLonLat([CenterLon, CenterLat]));
     OLMap.getView().setRotation(mapOrientation);
 
     //selectPlaneByHex(null,false);
     jQuery("#update_error").css('display','none');
-
-    // enable position watch on this user interaction, maybe improve reliability
-    watchPosition();
+    runAfterLoad(geoFindMe);
 }
 
 function updateMapSize() {
@@ -3581,7 +4250,7 @@ function expandSidebar(e) {
 }
 
 function showMap() {
-    jQuery('#sidebar_container').width(localStorage['sidebar_width']).css('margin-left', '0');
+    jQuery('#sidebar_container').width(loStore['sidebar_width']).css('margin-left', '0');
     jQuery("#map_container").show()
     mapIsVisible = true;
     jQuery("#toggle_sidebar_control").show();
@@ -3613,7 +4282,7 @@ function adjustInfoBlock() {
     jQuery('.ol-scale-line').css('left', (infoBlockWidth * globalScale + 8) + 'px');
     jQuery('#replayBar').css('left', (infoBlockWidth * globalScale + 8) + 'px');
 
-    if (SelectedPlane && toggles['selectedDetails'].state) {
+    if (SelectedPlane && toggles['enableInfoblock'].state) {
 
         if (!mapIsVisible)
             jQuery("#sidebar_container").css('margin-left', '140pt');
@@ -3653,20 +4322,21 @@ function adjustInfoBlock() {
     jQuery('#selected_photo').css("width", photoWidth + 'px');
 
     if (showPictures) {
-        if (planespottersAPI)
+        if (planespottersAPI || planespottingAPI) {
             jQuery('#photo_container').css('height', photoWidth * 0.883 + 'px');
-        else
+        } else {
             jQuery('#photo_container').css('height', '40px');
+        }
     }
 }
 
 function initializeUnitsSelector() {
     // Get display unit preferences from local storage
-    if (!localStorage.getItem('displayUnits')) {
-        localStorage['displayUnits'] = 'nautical';
+    if (!loStore.getItem('displayUnits')) {
+        loStore['displayUnits'] = 'nautical';
     }
 
-    DisplayUnits = localStorage['displayUnits'];
+    DisplayUnits = loStore['displayUnits'];
 
     // Initialize drop-down
     jQuery('#units_selector')
@@ -3680,7 +4350,7 @@ function initializeUnitsSelector() {
 }
 
 function onDisplayUnitsChanged(e) {
-    localStorage['displayUnits'] = DisplayUnits = e.target.value;
+    loStore['displayUnits'] = DisplayUnits = e.target.value;
 
     TAR.altitudeChart.render();
 
@@ -3707,6 +4377,9 @@ function onDisplayUnitsChanged(e) {
     jQuery(".distanceUnit").text(get_unit_label("distance", DisplayUnits));
     jQuery(".verticalRateUnit").text(get_unit_label("verticalRate", DisplayUnits));
     TAR.planeMan.redraw();
+
+    remakeTrails();
+    refreshSelected();
 }
 
 function onFilterByAltitude(e) {
@@ -3718,23 +4391,11 @@ function onFilterByAltitude(e) {
     refreshFilter();
 }
 
-function refreshFilter() {
-    if (filterTracks)
-        remakeTrails();
-
-    TAR.planeMan.refresh();
-    refreshSelected();
-    refreshHighlighted();
-    mapRefresh(true);
-
-    drawHeatmap();
-}
-
 function filterGroundVehicles(switchFilter) {
-    if (typeof localStorage['groundVehicleFilter'] === 'undefined') {
-        localStorage['groundVehicleFilter'] = 'not_filtered';
+    if (typeof loStore['groundVehicleFilter'] === 'undefined') {
+        loStore['groundVehicleFilter'] = 'not_filtered';
     }
-    let groundFilter = localStorage['groundVehicleFilter'];
+    let groundFilter = loStore['groundVehicleFilter'];
     if (switchFilter === true) {
         groundFilter = (groundFilter === 'not_filtered') ? 'filtered' : 'not_filtered';
     }
@@ -3743,15 +4404,15 @@ function filterGroundVehicles(switchFilter) {
     } else {
         jQuery('#groundvehicle_filter').removeClass('settingsCheckboxChecked');
     }
-    localStorage['groundVehicleFilter'] = groundFilter;
+    loStore['groundVehicleFilter'] = groundFilter;
     PlaneFilter.groundVehicles = groundFilter;
 }
 
 function filterBlockedMLAT(switchFilter) {
-    if (typeof localStorage['blockedMLATFilter'] === 'undefined') {
-        localStorage['blockedMLATFilter'] = 'not_filtered';
+    if (typeof loStore['blockedMLATFilter'] === 'undefined') {
+        loStore['blockedMLATFilter'] = 'not_filtered';
     }
-    let blockedMLATFilter = localStorage['blockedMLATFilter'];
+    let blockedMLATFilter = loStore['blockedMLATFilter'];
     if (switchFilter === true) {
         blockedMLATFilter = (blockedMLATFilter === 'not_filtered') ? 'filtered' : 'not_filtered';
     }
@@ -3760,7 +4421,7 @@ function filterBlockedMLAT(switchFilter) {
     } else {
         jQuery('#blockedmlat_filter').removeClass('settingsCheckboxChecked');
     }
-    localStorage['blockedMLATFilter'] = blockedMLATFilter;
+    loStore['blockedMLATFilter'] = blockedMLATFilter;
     PlaneFilter.blockedMLAT = blockedMLATFilter;
 }
 
@@ -3774,20 +4435,22 @@ function buttonActive(id, state) {
     }
 }
 
-function toggleIsolation(on, off) {
+function toggleIsolation(state) {
     let prevState = onlySelected;
-    if (showTrace && !on)
+    if (showTrace && state !== "on")
         return;
     onlySelected = !onlySelected;
-    if (on)
+    if (state === "on")
         onlySelected = true;
-    if (off)
+    if (state === "off")
         onlySelected = false;
 
     buttonActive('#I', onlySelected);
 
     if (prevState != onlySelected)
         refreshFilter();
+
+    fetchData({force: true});
 }
 
 function toggleMilitary() {
@@ -3796,8 +4459,7 @@ function toggleMilitary() {
 
     refreshFilter();
     active();
-    if (onlyMilitary)
-        fetchData({force: true});
+    fetchData({force: true});
 }
 
 function togglePersistence() {
@@ -3810,7 +4472,7 @@ function togglePersistence() {
 
     if (!noVanish)
         reaper();
-    localStorage['noVanish'] = noVanish;
+    loStore['noVanish'] = noVanish;
     console.log('noVanish = ' + noVanish);
 
     refreshFilter();
@@ -3818,8 +4480,8 @@ function togglePersistence() {
 
 function dim(evt) {
     try {
-        const dim = mapDimPercentage * (1 + 0.25 * toggles['darkerColors'].state);
-        const contrast = mapContrastPercentage * (1 + 0.1 * toggles['darkerColors'].state);
+        const dim = mapDimPercentage * (1 + 0.25 * toggles['darkerColors'].state) + layerExtraDim;
+        const contrast = mapContrastPercentage * (1 + 0.1 * toggles['darkerColors'].state) + layerExtraContrast;
         if (dim > 0.0001) {
             evt.context.globalCompositeOperation = 'multiply';
             evt.context.fillStyle = 'rgba(0,0,0,'+dim+')';
@@ -3880,7 +4542,7 @@ function invertMap(evt){
     }
 
     function loadLegend() {
-        let baseLegend = (DisplayUnits === 'metric') ? 'images/alt_legend_meters.svg' : 'images/alt_legend_feet.svg';
+        let baseLegend = (DisplayUnits === 'metric') ? 'images/alt_legend_m.svg' : 'images/alt_legend_ft.svg';
 
         jQuery.get(baseLegend, function (data) {
             jQuery('#altitude_chart_button').css("background-image", createLegendUrl(data));
@@ -3918,7 +4580,7 @@ function followRandomPlane() {
     let this_one = null;
     let tired = 0;
     do {
-        this_one = PlanesOrdered[Math.floor(Math.random()*PlanesOrdered.length)];
+        this_one = g.planesOrdered[Math.floor(Math.random()*g.planesOrdered.length)];
         if (!this_one || tired++ > 1000)
             break;
     } while ((this_one.isFiltered() && !onlySelected) || !this_one.position || (now - this_one.position_time > 30));
@@ -3927,14 +4589,20 @@ function followRandomPlane() {
         selectPlaneByHex(this_one.icao, {follow: true});
 }
 
-function toggleTableInView(switchOn) {
-    if (switchOn || (globeIndex && !icaoFilter)) {
+function toggleTableInView(arg) {
+    if (arg == 'enable') {
         tableInView = true;
-    } else {
+    } else if (arg == 'disable') {
+        tableInView = false;
+    } else if (!globeIndex) {
         tableInView = !tableInView;
-        TAR.planeMan.refresh();
     }
-    localStorage['tableInView'] = tableInView;
+
+    TAR.planeMan.refresh();
+
+    if (!globeIndex) {
+        loStore['tableInView'] = tableInView;
+    }
 
     jQuery('#with_positions').text(tableInView ? "On Screen:" : "With Position:");
 
@@ -3943,9 +4611,9 @@ function toggleTableInView(switchOn) {
 
 function toggleLabels() {
     enableLabels = !enableLabels;
-    localStorage['enableLabels'] = enableLabels;
-    for (let key in PlanesOrdered) {
-        PlanesOrdered[key].updateMarker();
+    loStore['enableLabels'] = enableLabels;
+    for (let key in g.planesOrdered) {
+        g.planesOrdered[key].updateMarker();
     }
     refreshFeatures();
     buttonActive('#L', enableLabels);
@@ -3954,23 +4622,26 @@ function toggleLabels() {
         remakeTrails();
 }
 
-function toggleExtendedLabels() {
+function toggleExtendedLabels(options) {
     if (isNaN(extendedLabels))
         extendedLabels = 0;
 
-    extendedLabels++;
-    extendedLabels %= 3;
+    options = options || {};
+    if (!options.noIncrement) {
+        extendedLabels++;
+    }
+    extendedLabels %= 4;
     //console.log(extendedLabels);
-    localStorage['extendedLabels'] = extendedLabels;
-    for (let key in PlanesOrdered) {
-        PlanesOrdered[key].updateMarker();
+    loStore['extendedLabels'] = extendedLabels;
+    for (let key in g.planesOrdered) {
+        g.planesOrdered[key].updateMarker();
     }
     buttonActive('#O', extendedLabels);
 }
 
 function toggleTrackLabels() {
     trackLabels = !trackLabels;
-    localStorage['trackLabels'] = trackLabels;
+    loStore['trackLabels'] = trackLabels;
 
     remakeTrails();
 
@@ -3988,7 +4659,7 @@ function toggleMultiSelect(newState) {
 
     if (!multiSelect) {
         if (!SelectedPlane)
-            toggleIsolation(false, "off");
+            toggleIsolation("off");
         if (prevState != multiSelect)
             deselectAllPlanes("keepMain");
     }
@@ -4000,28 +4671,63 @@ function onJump(e) {
     toggleFollow(false);
     if (e) {
         e.preventDefault();
-        airport = jQuery("#jump_input").val().trim().toUpperCase();
+        onJumpInput = jQuery("#jump_input").val();
         jQuery("#jump_input").val("");
         jQuery("#jump_input").blur();
     }
-    if (!_airport_coords_cache) {
-        jQuery.getJSON(databaseFolder + "/airport-coords.js")
-            .done(function(data) {
-                _airport_coords_cache = data;
-                onJump();
-            });
-    } else {
-        const coords = _airport_coords_cache[airport];
-        if (coords) {
-            OLMap.getView().setCenter(ol.proj.fromLonLat([coords[1], coords[0]]));
-
-            if (ZoomLvl >= 7) {
-                fetchData({force: true});
-            }
-
-            refreshFilter();
+    let coords = null;
+    let airport = null;
+    if (onJumpInput.indexOf(",") >= 0) {
+        let values = onJumpInput.split(',');
+        if (!values || values.length != 2) {
+            showSearchWarning('Input format decimal coordinates: LATI.TUDE, LONGI.TUDE');
         }
+        coords = [parseFloat(values[0]), parseFloat(values[1])];
+    } else {
+        airport = onJumpInput.trim().toUpperCase();
     }
+    if (airport) {
+        if (!g.airport_cache) {
+            jQuery.getJSON(databaseFolder + "/airport-coords.js")
+                .done(function(data) {
+                    g.airport_cache = data;
+                    onJump();
+                });
+            return;
+        }
+        coords = g.airport_cache[airport];
+    }
+    if (coords) {
+        console.log("jumping to: " + coords[0] + " " + coords[1]);
+        OLMap.getView().setCenter(ol.proj.fromLonLat([coords[1], coords[0]]));
+
+        if (zoomLvl >= 7) {
+            fetchData({force: true});
+        }
+
+        refreshFilter();
+        hideSearchWarning();
+    } else {
+        showSearchWarning('Failed to find airport ' + airport);
+    }
+}
+
+function hideSearchWarning() {
+    const searchWarning = jQuery('#search_warning');
+    if (searchWarning.css('display') !== 'none') {
+        searchWarning.hide('slow');
+    }
+}
+
+function showSearchWarning(message) {
+    const searchWarning = jQuery('#search_warning');
+    searchWarning.text(message)
+    if (searchWarning.css('display') === 'none') {
+        searchWarning.show();
+    }
+
+    //auto hide after 15 seconds
+    setTimeout(() => hideSearchWarning(), 15000);
 }
 
 function onSearch(e) {
@@ -4029,96 +4735,23 @@ function onSearch(e) {
     const searchTerm = jQuery("#search_input").val().trim();
     jQuery("#search_input").val("");
     jQuery("#search_input").blur();
+    let results = [];
     if (searchTerm)
-        findPlanes(searchTerm, "byIcao", "byCallsign", "byReg", "byType");
+        results = findPlanes(searchTerm, "byIcao", "byCallsign", "byReg", "byType", true);
+    if (results.length > 0 && globeIndex) {
+        toggleIsolation("on");
+        if (results.length < 100) {
+            getTrace(null, null, {list: results});
+        }
+    }
     return false;
 }
-
-/*
-function onSearchReg(e) {
-    e.preventDefault();
-    const searchTerm = jQuery("#search_reg_input").val().trim();
-    jQuery("#search_reg_input").val("");
-    jQuery("#search_reg_input").blur();
-    if (searchTerm)
-        findPlanes(searchTerm, false, false, "byReg", false);
-    return false;
-}
-*/
-
-function onResetCallsignFilter(e) {
-    jQuery("#callsign_filter").val("");
-    jQuery("#callsign_filter").blur();
-
-    updateCallsignFilter();
-}
-
-function updateCallsignFilter(e) {
-    if (e)
-        e.preventDefault();
-
-    jQuery("#callsign_filter").blur();
-
-    PlaneFilter.callsign = jQuery("#callsign_filter").val().trim().toUpperCase();
-
-    refreshFilter();
-}
-
-function onResetTypeFilter(e) {
-    jQuery("#type_filter").val("");
-    jQuery("#type_filter").blur();
-
-    updateTypeFilter();
-}
-
-function updateTypeFilter(e) {
-    if (e)
-        e.preventDefault();
-
-    jQuery("#type_filter").blur();
-    let type = jQuery("#type_filter").val().trim();
-
-    PlaneFilter.type = type.toUpperCase();
-
-    refreshFilter();
-}
-
-function onResetIcaoFilter(e) {
-    jQuery("#icao_filter").val("");
-    jQuery("#icao_filter").blur();
-
-    updateIcaoFilter();
-}
-
-function updateIcaoFilter(e) {
-    if (e)
-        e.preventDefault();
-
-    jQuery("#icao_filter").blur();
-    let icao = jQuery("#icao_filter").val().trim();
-
-    PlaneFilter.icao = icao.toLowerCase();
-
-    refreshFilter();
-}
-
-function onResetDescriptionFilter(e) {
-    jQuery("#description_filter").val("");
-    jQuery("#description_filter").blur();
-
-    updateTypeFilter();
-}
-
-function updateDescriptionFilter(e) {
-    if (e)
-        e.preventDefault();
-
-    jQuery("#description_filter").blur();
-    let description = jQuery("#description_filter").val().trim();
-
-    PlaneFilter.description = description.toUpperCase();
-
-    refreshFilter();
+function onSearchClear(e) {
+    deselectAllPlanes();
+    toggleIsolation("off");
+    toggleMultiSelect("off");
+    jQuery("#search_input").val("");
+    jQuery("#search_input").blur();
 }
 
 function onResetAltitudeFilter(e) {
@@ -4144,6 +4777,12 @@ function updateAltFilter() {
         maxAltitude = 1e6;
     else
         enabled = true;
+
+    if (!enabled) {
+        PlaneFilter.enabled = false;
+        PlaneFilter.minAltitude = undefined;
+        PlaneFilter.maxAltitude = undefined;
+    }
 
     PlaneFilter.enabled = enabled;
 
@@ -4201,6 +4840,162 @@ function updateFlagFilter(e) {
     refreshFilter();
 }
 
+const filters = {};
+const filter_list = [];
+const filters_active = [];
+
+function Filter(arg) {
+    this.key = arg.key;
+    this.field = arg.field;
+    this.name = arg.name;
+    this.tbody = document.getElementById(arg.table).getElementsByTagName('tbody')[0];
+
+    this.id = 'filters_' + this.key;
+    this.sid = '#' + this.id;
+
+    filters[this.key] = this;
+    filter_list.push(this);
+
+    this.init();
+}
+
+Filter.prototype.update = function(e) {
+    if (e) {
+        e.preventDefault();
+    }
+
+    this.input.blur();
+    const val = this.input.val().trim();
+
+    this.set(val);
+
+    return false;
+}
+Filter.prototype.set = function(val) {
+
+    this.input.val(val);
+    this.pattern = val;
+    this.PATTERN = this.pattern.toUpperCase();
+
+    const list_index = filters_active.indexOf(this);
+    if (val && list_index < 0) {
+        filters_active.push(this);
+    }
+    if (!val && list_index >= 0) {
+        filters_active.splice(list_index);
+    }
+
+    refreshFilter();
+}
+
+Filter.prototype.reset = function(e) {
+    if (e) {
+        e.preventDefault();
+    }
+    this.set("");
+    return false;
+}
+
+Filter.prototype.init = function() {
+    // don't F directly with the innerhtml of the body because it will drop event listeners / recreate dom elements
+    const row = this.tbody.insertRow();
+    row.innerHTML =
+        `<td><form id="${this.id}">`
+        + '<div class="infoBlockTitleText">Filter by '+ this.name +':</div>'
+        + `<input id="${this.id}_input" name="${this.id}_name" type="text" class="searchInput" maxlength="1024">`
+        + '<button class="formButton" type="submit">Filter</button>'
+        + `<button class="formButton" id="${this.id}_reset">Reset</button>`
+        + '</form></td>'
+    ;
+    this.input = jQuery(this.sid + '_input');
+    this.form = document.getElementById(this.id)
+    this.form.onsubmit = (e) => { return this.update(e); };
+    jQuery(this.sid + '_reset').click((e) => { return this.reset(e); });
+}
+
+function initFilters() {
+    initSourceFilter(tableColors.unselected);
+    initFlagFilter(tableColors.unselected);
+    new Filter({
+        key: 'callsign',
+        field: 'name',
+        name: 'callsign',
+        table: "filterTable",
+    });
+    new Filter({
+        key: 'squawk',
+        field: 'squawk',
+        name: 'squawk',
+        table: "filterTable",
+    });
+    new Filter({
+        key: 'type',
+        field: 'icaoType',
+        name: 'type code',
+        table: "filterTable",
+    });
+    new Filter({
+        key: 'description',
+        field: 'typeDescription',
+        name: 'type description',
+        table: "filterTable",
+    });
+    new Filter({
+        key: 'icao',
+        field: 'icao',
+        name: 'ICAO hex id',
+        table: "filterTable",
+    });
+
+
+    new Filter({
+        key: 'registration',
+        field: 'registration',
+        name: 'registration',
+        table: 'filterTable3'
+    });
+    new Filter({
+        key: 'country',
+        field: 'country',
+        name: 'country of registration',
+        table: 'filterTable3'
+    });
+    new Filter({
+        key: 'category',
+        field: 'category',
+        name: 'category (A3,B0,..)',
+        table: 'filterTable3'
+    });
+
+    if (PlaneFilter) {
+        if (PlaneFilter.minAltitude && PlaneFilter.minAltitude > -1000000) {
+            jQuery('#altitude_filter_min').val(PlaneFilter.minAltitude);
+        }
+        if (PlaneFilter.maxAltitude && PlaneFilter.maxAltitude < 1000000) {
+            jQuery('#altitude_filter_max').val(PlaneFilter.maxAltitude);
+        }
+
+        for (const filter of filter_list) {
+            if (usp.has(`filter${filter.key}`)) {
+                filter.set(usp.get(`filter${filter.key}`));
+            }
+        }
+
+        if (PlaneFilter.sources) {
+            sourcesFilter = PlaneFilter.sources
+            sourcesFilter.map((f) => jQuery('#source-filter-' + f).addClass('ui-selected'))
+        }
+
+        if (PlaneFilter.flagFilter) {
+            flagFilter = PlaneFilter.flagFilter
+            flagFilter.map((f) => jQuery('#flag-filter-' + f).addClass('ui-selected'))
+        }
+    }
+}
+
+
+
+
 
 function getFlightAwareModeSLink(code, ident, linkText) {
     if (code !== null && code.length > 0 && code[0] !== '~' && code !== "000000") {
@@ -4228,8 +5023,8 @@ function getPhotoLink(ac) {
         if (ac.registration == null || ac.registration == "")
             return "";
         return "<a class=\"link\" target=\"_blank\" href=\"https://flightaware.com/photos/aircraft/" + ac.registration.replace(/[^0-9a-z]/ig,'') + "\" rel=\"noreferrer\">FA Photos</a>";
-    } else {
-        return "<a class=\"link\" target=\"_blank\" href=\"https://www.planespotters.net/hex/" + ac.icao.toUpperCase() + "\" rel=\"noreferrer\">View on Planespotters</a>";
+    } else if (showPictures) {
+        return "<a class=\"link\" target=\"_blank\" href=\"https://www.planespotters.net/hex/" + ac.icao.toUpperCase() + "\" rel=\"noreferrer\">View on g.planespotters</a>";
     }
 }
 
@@ -4269,8 +5064,8 @@ function fetchPfData() {
         const req = jQuery.ajax({ url: pf_data[i],
             dataType: 'json' });
         jQuery.when(req).done(function(data) {
-            for (let i in PlanesOrdered) {
-                const plane = PlanesOrdered[i];
+            for (let i in g.planesOrdered) {
+                const plane = g.planesOrdered[i];
                 const ac = data.aircraft[plane.icao.toUpperCase()];
                 if (!ac) {
                     continue;
@@ -4293,11 +5088,11 @@ function fetchPfData() {
 function solidGoldT(arg) {
     solidT = true;
     let list = [[], [], [], []];
-    for (let i = 0; i < PlanesOrdered.length; i++) {
-        let plane = PlanesOrdered[i];
+    for (let i = 0; i < g.planesOrdered.length; i++) {
+        let plane = g.planesOrdered[i];
         //console.log(plane);
         if (plane.visible) {
-            list[Math.floor(4*i/PlanesOrdered.length)].push(plane);
+            list[Math.floor(4*i/g.planesOrdered.length)].push(plane);
         }
     }
     getTrace(null, null, {onlyRecent: arg == 2, onlyFull: arg == 1, list: list[0],});
@@ -4337,16 +5132,16 @@ function changeZoom(init) {
     if (!OLMap)
         return;
 
-    ZoomLvl = OLMap.getView().getZoom();
+    zoomLvl = OLMap.getView().getZoom();
 
     checkScale();
 
     // small zoomstep, no need to change aircraft scaling
-    if (!init && Math.abs(ZoomLvl-ZoomLvlCache) < 0.4)
+    if (!init && Math.abs(zoomLvl-zoomLvlCache) < 0.4)
         return;
 
-    localStorage['ZoomLvl'] = ZoomLvl;
-    ZoomLvlCache = ZoomLvl;
+    loStore['zoomLvl'] = zoomLvl;
+    zoomLvlCache = zoomLvl;
 
     if (!init && showTrace)
         updateAddressBar();
@@ -4355,10 +5150,16 @@ function changeZoom(init) {
 }
 
 function checkScale() {
-    if (ZoomLvl > markerZoomDivide)
+    if (zoomLvl > markerZoomDivide) {
         iconSize = markerBig;
-    else
+    } else if (zoomLvl > markerZoomDivide - 1) {
         iconSize = markerSmall;
+    } else {
+        iconSize = markerSmall;
+        if (aircraftShown > 700) {
+            iconSize *= 0.9;
+        }
+    }
 
     // scale markers according to global scaling
     iconSize *= Math.pow(1.3, globalScale) * globalScale * iconScale;
@@ -4382,7 +5183,7 @@ function setGlobalScale(scale, init) {
 }
 
 function checkPointermove() {
-    if ((webgl || ZoomLvl > 5.5) && enableMouseover && !onMobile) {
+    if ((webgl || zoomLvl > 5.5) && enableMouseover && !onMobile) {
         OLMap.on('pointermove', onPointermove);
     } else {
         OLMap.un('pointermove', onPointermove);
@@ -4395,22 +5196,26 @@ function changeCenter(init) {
     const rawCenter = OLMap.getView().getCenter();
     const center = ol.proj.toLonLat(rawCenter);
 
-    const centerChanged = (Math.abs(center[1] - CenterLat) < 0.000001 && Math.abs(center[0] - CenterLon) < 0.000001);
+    const centerChanged = (Math.abs(center[1] - CenterLat) > 0.000001 || Math.abs(center[0] - CenterLon) > 0.000001);
 
-    localStorage['CenterLon'] = CenterLon = center[0];
-    localStorage['CenterLat'] = CenterLat = center[1];
+    if (!init && !centerChanged) {
+        return;
+    }
 
-    if (!init && showTrace && centerChanged) {
+    loStore['CenterLon'] = CenterLon = center[0];
+    loStore['CenterLat'] = CenterLat = center[1];
+
+    if (!init) {
         updateAddressBar();
     }
 
-    if (rawCenter[0] < OLProj.extent_[0] || rawCenter[0] > OLProj.extent_[2]) {
+    if (rawCenter[0] < OLProjExtent[0] || rawCenter[0] > OLProjExtent[2]) {
         OLMap.getView().setCenter(ol.proj.fromLonLat(center));
-        mapRefresh();
+        refresh();
     }
-    if (center[1] < -85)
+    if (CenterLat < -85)
         OLMap.getView().setCenter(ol.proj.fromLonLat([center[0], -85]));
-    if (center[1] > 85)
+    if (CenterLat > 85)
         OLMap.getView().setCenter(ol.proj.fromLonLat([center[0], 85]));
 }
 
@@ -4420,6 +5225,8 @@ let checkMoveCenter = [0, 0];
 let checkMoveDone = 0;
 
 function checkMovement() {
+    if (!OLMap)
+        return;
     const zoom = OLMap.getView().getZoom();
     const center = ol.proj.toLonLat(OLMap.getView().getCenter());
     const ts = new Date().getTime();
@@ -4430,7 +5237,9 @@ function checkMovement() {
         checkMoveCenter[1] != center[1]
     ) {
         checkMoveDone = 0;
-        checkFollow();
+        if (FollowSelected) {
+            checkFollow();
+        }
         active();
         lastMovement = ts;
     }
@@ -4484,7 +5293,7 @@ function checkRefresh() {
         }
     }
 }
-function refresh() {
+function refresh(redraw) {
     lastRefresh = new Date().getTime();
 
     refreshZoom = getZoom();
@@ -4497,71 +5306,90 @@ function refresh() {
         }
     }
 
+    // before planeman refresh / mapRefresh
+    updateVisible();
+
     //console.time("refreshTable");
     TAR.planeMan.refresh();
     //console.timeEnd("refreshTable");
-    mapRefresh();
-
-    triggerRefresh = 0;
-
+    mapRefresh(redraw);
     refreshSelected();
     refreshHighlighted();
+
+    triggerRefresh = 0;
+}
+
+function refreshFilter() {
+    if (filterTracks)
+        remakeTrails();
+
+    refresh(true);
+
+    drawHeatmap();
+    if (toggles.shareFilters && toggles.shareFilters.state) {
+        updateAddressBar();
+    }
+}
+
+
+function updateVisible() {
+    if (mapIsVisible || !lastRenderExtent) {
+        lastRenderExtent = getRenderExtent();
+    }
+    aircraftShown = 0;
+    for (let i in g.planesOrdered) {
+        const plane = g.planesOrdered[i];
+        plane.updateVisible();
+        aircraftShown += (plane.visible && plane.inView);
+    }
+    checkScale();
 }
 
 function mapRefresh(redraw) {
     if (!mapIsVisible || heatmap)
         return;
-    //console.log('mapRefresh()');
     let addToMap = [];
     let nMapPlanes = 0;
+    let count = 0;
+
     if (globeIndex && !icaoFilter) {
-        for (let i in PlanesOrdered) {
-            const plane = PlanesOrdered[i];
+        for (let i in g.planesOrdered) {
+            count++;
+            const plane = g.planesOrdered[i];
             delete plane.glMarker;
             // disable mobile limitations when using webGL
-            if (
-                (!onMobile || webgl || nMapPlanes < 150)
-                && (!onMobile || webgl || ZoomLvl > 10 || !plane.onGround)
-                && plane.visible
-                && plane.inView
-            ) {
-                addToMap.push(plane);
-                nMapPlanes++;
-            } else if (plane.selected) {
+            if (plane.selected || (plane.inView && plane.visible && (!onMobile || webgl || (nMapPlanes < 150 && (!plane.onGround || zoomLvl > 10))))) {
                 addToMap.push(plane);
                 nMapPlanes++;
             } else {
                 plane.markerDrawn && plane.clearMarker();
-                plane.linesDrawn && plane.clearLines();
+                !SelectedAllPlanes && plane.linesDrawn && plane.clearLines();
             }
         }
     } else {
-        for (let i in PlanesOrdered) {
-            const plane = PlanesOrdered[i];
-            addToMap.push(plane);
+        for (let i in g.planesOrdered) {
+            const plane = g.planesOrdered[i];
             delete plane.glMarker;
+            addToMap.push(plane);
         }
     }
+
+    //console.log('planes on map: ' + nMapPlanes + ' / ' + count);
 
     // webGL zIndex hack:
     // sort all planes by altitude
     // clear the vector source
     // delete all feature objects so they are recreated, this is important
-    // draw order will be insertion / updateFeatures / updateTick order
+    // draw order will be insertion / updateFeatures order
 
     addToMap.sort(function(x, y) { return x.zIndex - y.zIndex; });
     //console.log('maprefresh(): ' + addToMap.length);
     if (webgl) {
         webglFeatures.clear();
     }
-    if (globeIndex && !icaoFilter) {
-        for (let i in addToMap) {
-            addToMap[i].updateFeatures(redraw);
-        }
-    } else {
-        for (let i in addToMap) {
-            addToMap[i].updateTick(redraw);
-        }
+
+    for (let i in addToMap) {
+        addToMap[i].updateFeatures(redraw);
     }
 }
 
@@ -4590,7 +5418,7 @@ function highlight(evt) {
     //clearTimeout(pointerMoveTimeout);
 
     if (hex) {
-        HighlightedPlane = Planes[hex];
+        HighlightedPlane = g.planes[hex];
     } else {
         HighlightedPlane = null;
     }
@@ -4605,7 +5433,7 @@ function parseURLIcaos() {
             const icao = inArray[i].toLowerCase();
             if (icao && (icao.length == 7 || icao.length == 6) && icao.toLowerCase().match(/[a-f,0-9]{6}/)) {
                 urlIcaos.push(icao);
-                let newPlane = Planes[icao] || new PlaneObject(icao);
+                let newPlane = g.planes[icao] || new PlaneObject(icao);
                 newPlane.last_message_time = NaN;
                 newPlane.position_time = NaN;
                 newPlane.selected = true;
@@ -4655,6 +5483,7 @@ function processURLParams(){
             const lon = parseFloat(usp.get("lon"));
             OLMap.getView().setCenter(ol.proj.fromLonLat([lon, lat]));
             follow = false;
+            traceOpts.noFollow = new Date().getTime() / 1000;
         }
         catch (error) {
             console.log("Error parsing lat/lon:", error);
@@ -4664,34 +5493,36 @@ function processURLParams(){
     if (urlIcaos.length > 0) {
         const icaos = urlIcaos;
         if (!usp.has('noIsolation'))
-            toggleIsolation("on", false);
+            toggleIsolation("on");
         if (icaos.length > 1) {
             toggleMultiSelect("on");
             //follow = false;
         }
         for (let i = 0; i < icaos.length; i++) {
             const icao = icaos[i];
-            console.log('Selected ICAO id: '+ icao);
+            console.log('Selected ICAO id: '+ icao + ' traceDate: ' + traceDateString);
+            let options = {follow: follow, noDeselect: true};
             if (traceDate != null) {
-                let newPlane = Planes[icao] || new PlaneObject(icao);
+                let newPlane = g.planes[icao] || new PlaneObject(icao);
                 newPlane.last_message_time = NaN;
                 newPlane.position_time = NaN;
                 newPlane.selected = true;
-                select(newPlane);
+                select(newPlane, options);
 
-                if (!zoom)
-                    zoom = 5;
+                (!zoom) && (zoom = 5);
             } else {
-                if (!zoom)
-                    zoom = 7;
-                selectPlaneByHex(icao, {follow: follow, noDeselect: true})
+                (!zoom) && (zoom = 7);
+                selectPlaneByHex(icao, options);
             }
         }
         if (traceDate != null)
+        {
             toggleShowTrace();
+            toggleFollow(follow);
+        }
         updateAddressBar();
     } else if (callsign != null) {
-        findPlanes(callsign, false, true, false, false);
+        findPlanes(callsign, false, true, false, false, false);
     }
 
     if (zoom) {
@@ -4702,7 +5533,7 @@ function processURLParams(){
         toggleMilitary();
 
     if (usp.has('airport')) {
-        airport = usp.get('airport').trim().toUpperCase();
+        onJumpInput = usp.get('airport').trim().toUpperCase();
         onJump();
     }
 
@@ -4741,6 +5572,10 @@ function processURLParams(){
     if (usp.has('centerReceiver')) {
         OLMap.getView().setCenter(ol.proj.fromLonLat([SiteLon, SiteLat]));
     }
+    if (usp.has('lockDotCentered')) {
+        lockDotCentered = true;
+        OLMap.getView().setCenter(ol.proj.fromLonLat([SiteLon, SiteLat]));
+    }
 }
 
 let regIcaoDownloadRunning = false;
@@ -4753,14 +5588,14 @@ function regIcaoDownload(opts) {
         opts: opts,
     });
     req.done(function(data) {
-        regCache = data;
+        db.regCache = data;
     });
     req.always(function() {
         regIcaoDownloadRunning = false;
     });
     return req;
 }
-function findPlanes(queries, byIcao, byCallsign, byReg, byType) {
+function findPlanes(queries, byIcao, byCallsign, byReg, byType, showWarnings) {
     if (queries == null)
         return;
     queries = queries.toLowerCase();
@@ -4771,59 +5606,76 @@ function findPlanes(queries, byIcao, byCallsign, byReg, byType) {
     for (let i in queries) {
         const query = queries[i];
         if (byReg) {
-            let upper = query.toUpperCase();
-            if (regCache) {
-                if (regCache[upper]) {
-                    selectPlaneByHex(regCache[upper].toLowerCase(), {noDeselect: true, follow: true});
+            let upper = query.toUpperCase().replace("-", "");
+            if (db.regCache) {
+                if (db.regCache[upper]) {
+                    selectPlaneByHex(db.regCache[upper].toLowerCase(), {noDeselect: true, follow: true});
                 }
             } else if (!regIcaoDownloadRunning) {
                 let req = regIcaoDownload({ upper: `${upper}` });
                 req.done(function() {
-                    if (regCache[this.opts.upper]) {
-                        selectPlaneByHex(regCache[this.opts.upper].toLowerCase(), {noDeselect: true, follow: true});
+                    if (db.regCache[this.opts.upper]) {
+                        selectPlaneByHex(db.regCache[this.opts.upper].toLowerCase(), {noDeselect: true, follow: true});
                     }
                 });
             }
         }
-        for (let i in PlanesOrdered) {
-            const plane = PlanesOrdered[i];
+        for (let i in g.planesOrdered) {
+            const plane = g.planesOrdered[i];
             if (
                 (byCallsign && plane.flight != null && plane.flight.toLowerCase().match(query))
                 || (byIcao && plane.icao.toLowerCase().match(query))
                 || (byReg && plane.registration != null && plane.registration.toLowerCase().match(query))
                 || (byType && plane.icaoType != null && plane.icaoType.toLowerCase().match(query))
             ) {
-                if (plane.checkVisible())
-                    results.push(plane);
+                if (globeIndex) {
+                    if (plane.inView)
+                        results.push(plane);
+                } else {
+                    if (plane.checkVisible())
+                        results.push(plane);
+                }
             }
         }
     }
     if (results.length > 1) {
         toggleMultiSelect("on");
         for (let i in results) {
-            results[i].selected = true;
+            select(results[i], {});
             results[i].updateTick(true);
+            sp = SelectedPlane = null;
         }
+        showWarnings && hideSearchWarning();
     } else if (results.length == 1) {
         selectPlaneByHex(results[0].icao, {noDeselect: true, follow: true});
         console.log("query selected: " + queries);
+        showWarnings && hideSearchWarning();
     } else {
         console.log("No match found for query: " + queries);
+        let foundByHex = 0;
         if (globeIndex) {
             for (let i in queries) {
                 const query = queries[i];
                 if (query.toLowerCase().match(/~?[a-f,0-9]{6}/)) {
                     console.log("maybe it's an icao, let's try to fetch the history for it!");
-                    selectPlaneByHex(query, {noDeselect: true, follow: true})
+                    selectPlaneByHex(query, {noDeselect: true, follow: true}) && foundByHex++
                 }
             }
         }
+        if (foundByHex === 0 && showWarnings) {
+            if (globeIndex) {
+                showSearchWarning("No match found in current view: " + queries);
+            } else {
+                showSearchWarning("No match found for query: " + queries);
+            }
+        }
     }
+    return results;
 }
 
 function trailReaper() {
-    for (let i in PlanesOrdered) {
-        PlanesOrdered[i].reapTrail();
+    for (let i in g.planesOrdered) {
+        g.planesOrdered[i].reapTrail();
     }
 }
 
@@ -4843,9 +5695,7 @@ function setIndexDistance(index, center, coords) {
 function globeIndexes() {
     const center = ol.proj.toLonLat(OLMap.getView().getCenter());
     if (mapIsVisible || lastGlobeExtent == null) {
-        let mapSize = OLMap.getSize();
-        let size = [mapSize[0] * 1.02, mapSize[1] * 1.02];
-        lastGlobeExtent = myExtent(OLMap.getView().calculateExtent(size));
+        lastGlobeExtent = getViewOversize(1.02);
     }
     let extent = lastGlobeExtent.extent;
     const bottomLeft = ol.proj.toLonLat([extent[0], extent[1]]);
@@ -4985,38 +5835,28 @@ let updateAddressBarPushed = false;
 function updateAddressBar() {
     if (!window.history || !window.history.replaceState)
         return;
-    if (heatmap || pTracks)
+    if (heatmap || pTracks || !CenterLat || uuid)
         return;
-    let time = new Date().getTime();
-    if (time < lastAddressBarUpdate + 200) {
-        clearTimeout(updateAddressBarTimeout);
-        updateAddressBarTimeout = setTimeout(updateAddressBar, 205);
-        return;
-    }
-    lastAddressBarUpdate = time;
 
-    let posString = 'lat=' + CenterLat.toFixed(3) + '&lon=' + CenterLon.toFixed(3) + '&zoom=' + ZoomLvl.toFixed(1);
-    let string;
-    if ((showTrace || replay) && SelectedPlane) {
-        posString = "&" + posString;
-    } else {
-        posString = ""
-    }
+    let string = '';
 
-    string = pathName;
     if (SelPlanes.length > 0) {
-        string += '?icao=';
-        for (let i in SelPlanes) {
-            string += SelPlanes[i].icao;
-            if (i < SelPlanes.length - 1)
-                string += ',';
-        }
+        string += '?icao=' + SelPlanes.map((s) => encodeURIComponent(s.icao)).join(',')
+    } else if (replay) {
+        string += '?replay=';
+        string += zDateString(replay.ts);
+        string += '-' + replay.ts.getUTCHours().toString().padStart(2,'0');
+        string += ':' + replay.ts.getUTCMinutes().toString().padStart(2,'0');
     }
 
-    string += posString;
+    if (showTrace || replay) {
+        string += (string ? '&' : '?');
+        string += 'lat=' + CenterLat.toFixed(3) + '&lon=' + CenterLon.toFixed(3) + '&zoom=' + zoomLvl.toFixed(1);
+    }
 
-    if (SelectedPlane && (showTrace || replay)) {
-        string += '&showTrace=' + traceDateString;
+    if (SelPlanes.length > 0 && (showTrace || replay)) {
+        string += (string ? '&' : '?');
+        string += 'showTrace=' + traceDateString;
         if (legSel != -1)
             string += '&leg=' + (legSel + 1);
         if (traceOpts.startHours != null) {
@@ -5037,6 +5877,12 @@ function updateAddressBar() {
         }
         if (trackLabels) {
             string += '&trackLabels';
+            if (labelsGeom) {
+                string += '&labelsGeom';
+            }
+            if (geomUseEGM) {
+                string += '&geomEGM';
+            }
         }
         if (traceOpts.showTime) {
             string += '&timestamp=';
@@ -5044,15 +5890,71 @@ function updateAddressBar() {
         }
     }
 
-    shareLink = string;
+    let shareFilter = '';
+    if (shareFiltersParam || (toggles.shareFilters  && toggles.shareFilters.state)) {
+        let filterStrings = [];
 
-    if (uuid)
-        return;
-    if (icaoFilter)
-        return;
+        if (PlaneFilter.minAltitude > -1000000) {
+            filterStrings.push('filterAltMin=' + PlaneFilter.minAltitude);
+        }
+        if (PlaneFilter.maxAltitude < 1000000) {
+            filterStrings.push('filterAltMax=' + PlaneFilter.maxAltitude);
+        }
 
-    if (SelPlanes.length == 0 && initialURL && initialURL.indexOf("icao") < 0)
+        for (const filter of filters_active) {
+            filterStrings.push(`filter${filter.key}=${encodeURIComponent(filter.pattern)}`);
+        }
+
+        if (PlaneFilter.sources) {
+            filterStrings.push('filterSources=' + PlaneFilter.sources.map(f => encodeURIComponent(f)).join(','));
+        }
+        if (PlaneFilter.flagFilter) {
+            filterStrings.push('filterDbFlag=' + PlaneFilter.flagFilter.map(f => encodeURIComponent(f)).join(','));
+        }
+
+        if (filterStrings.length > 0) {
+            shareFilter = shareFilter + filterStrings.join('&');
+        } else {
+            shareFilter = '';
+        }
+
+        //console.log(shareFilter);
+
+        if (shareFilter) {
+            string += (string ? '&' : '?');
+            string += shareFilter;
+        }
+    }
+
+    if (icaoFilter && !showTrace) {
+        string += (string ? '&' : '?');
+        string += 'icaoFilter=' + icaoFilter.join(',')
+    }
+
+    if (shareBaseUrl) {
+        shareLink = shareBaseUrl + string;
+    } else {
+        shareLink = window.location.origin + pathName + string;
+    }
+    //console.log(shareLink);
+
+    if (!string && !usp.has('showTrace') && !usp.has('icao')) {
         string = initialURL;
+    } else {
+        string = pathName + string;
+    }
+
+    // Update URL bar
+    /*
+    let time = new Date().getTime();
+    if (time < lastAddressBarUpdate + 200) {
+        clearTimeout(updateAddressBarTimeout);
+        updateAddressBarTimeout = setTimeout(updateAddressBar, 205);
+        return;
+    }
+
+    lastAddressBarUpdate = time;
+    */
 
     if (!updateAddressBarPushed) {
         // make sure we keep the thing we clicked on first in the browser history
@@ -5068,7 +5970,7 @@ function refreshInt() {
     let refresh = RefreshInterval;
 
     if (uuid)
-        return 5000;
+        return 5050;
 
     // handle non globe case
     if (!globeIndex) {
@@ -5077,43 +5979,83 @@ function refreshInt() {
 
     // handle globe case
 
-    if (binCraft && globeIndex && onlyMilitary && OLMap.getView().getZoom() < 5.5) {
-        refresh = 8000;
+    if (reApi && (binCraft || zstd)) {
+        refresh = RefreshInterval * lastRequestSize / 35000;
+        let extent = getViewOversize(1.03);
+        let min = 0.7;
+        let max = 7;
+        if (zoomLvl < 5) {
+            min += Math.min(1, (5 - zoomLvl) / 4);
+        }
+        if (refresh < RefreshInterval * min) {
+            refresh = RefreshInterval * min;
+        }
+        if (refresh > RefreshInterval * max) {
+            refresh = RefreshInterval * max;
+        }
+        if (onlySelected && SelPlanes.length == 0 && reApi) {
+            // no aircraft selected, none shown
+            refresh = RefreshInterval * max * 2;
+        }
+        if (!FollowSelected && lastRequestBox != requestBoxString()) {
+            refresh = Math.min(RefreshInterval, refresh / 4);
+        }
+    }
+
+    if (!reApi && binCraft && globeIndex && onlyMilitary && OLMap.getView().getZoom() < 5.5) {
+        refresh = 5000;
     }
 
     let inactive = getInactive();
 
-    if (inactive < 70)
-        inactive = 70;
-    if (inactive > 240)
-        inactive = 240;
+    const base = 70;
 
-    refresh *= inactive / 70;
+    if (inactive < base)
+        inactive = base;
+    if (inactive > 4 * base)
+        inactive = 4 * base;
+
+
+    if (globeIndex) {
+        refresh *= inactive / base;
+    }
 
     if (!mapIsVisible)
         refresh *= 2;
 
-    if (onMobile && TrackedAircraftPositions > 800)
+    if (adsbexchange && window.self != window.top) {
         refresh *= 1.5;
+    } else if (onMobile && TrackedAircraftPositions > 800) {
+        refresh *= 1.5;
+    }
+
+    if (document.visibilityState === 'hidden') { refresh *= 4; } // in case visibility change events don't work, reduce refresh rate if visibilityState works
+
+    //console.log(refresh);
+
+    lastRefreshInt = refresh;
 
     return refresh;
 }
 
 function toggleShowTrace() {
-    if (!showTrace) {
-        showTrace = true;
+    showTrace = !showTrace;
+    if (showTrace) {
+        jQuery("#selected_showTrace_hide").hide();
+
         toggleFollow(false);
         showTraceWasIsolation = onlySelected;
-        toggleIsolation("on", null);
+        toggleIsolation("on");
         shiftTrace();
     } else {
-        showTrace = false;
+        jQuery("#selected_showTrace_hide").show();
+
         traceOpts = {};
         fetchData();
         legSel = -1;
         jQuery('#leg_sel').text('Legs: All');
         if (!showTraceWasIsolation)
-            toggleIsolation(null, "off");
+            toggleIsolation("off");
         //let string = pathName + '?icao=' + SelectedPlane.icao;
         //window.history.replaceState("object or string", "Title", string);
         //shareLink = string;
@@ -5125,7 +6067,7 @@ function toggleShowTrace() {
             const plane = SelPlanes[i];
             plane.setNull();
         }
-        selectPlaneByHex(hex, {noDeselect: true, follow: true, zoom: ZoomLvl,});
+        selectPlaneByHex(hex, {noDeselect: true, follow: true, zoom: zoomLvl,});
     }
 
     jQuery('#history_collapse').toggle();
@@ -5235,7 +6177,6 @@ function setTraceDate(options) {
     }
 
     traceDateString = zDateString(traceDate);
-    traceDay = traceDate.getUTCDate();
 
     return traceDate;
 }
@@ -5263,7 +6204,7 @@ function shiftTrace(offset) {
     jQuery("#histDatePicker").datepicker('setDate', traceDateString);
 
     for (let i in SelPlanes) {
-        selectPlaneByHex(SelPlanes[i].icao, {noDeselect: true, zoom: ZoomLvl});
+        selectPlaneByHex(SelPlanes[i].icao, {noDeselect: true, zoom: zoomLvl});
     }
 
     updateAddressBar();
@@ -5327,17 +6268,17 @@ function onLocationChange(position) {
     lastCallLocationChange = new Date().getTime();
     changeCenter();
     const moveMap = (Math.abs(SiteLat - CenterLat) < 0.000001 && Math.abs(SiteLon - CenterLon) < 0.000001);
-    SiteLat = CenterLat = DefaultCenterLat = position.coords.latitude;
-    SiteLon = CenterLon = DefaultCenterLon = position.coords.longitude;
+    SiteLat = DefaultCenterLat = position.coords.latitude;
+    SiteLon = DefaultCenterLon = position.coords.longitude;
     SitePosition = [SiteLon, SiteLat];
 
     drawSiteCircle();
     createLocationDot();
 
-    if (moveMap) {
+    if (moveMap || lockDotCentered) {
         OLMap.getView().setCenter(ol.proj.fromLonLat([SiteLon, SiteLat]));
     }
-    console.log('Location from browser: '+ SiteLat +', ' + SiteLon);
+    console.log('Changed Site Location to: '+ SiteLat +', ' + SiteLon);
     //followRandomPlane();
     //togglePersistence();
 }
@@ -5348,8 +6289,9 @@ function logArg(error) {
 let watchPositionId;
 let pollPositionSeconds = 10;
 function pollPositionInterval() {
-    if (!updateLocation)
+    if (!updateLocation || !geoFindEnabled()) {
         return;
+    }
     // interval position polling every half minute for browsers that are shit
     //console.trace();
     clearInterval(timers.pollPosition);
@@ -5375,7 +6317,10 @@ function pollPositionInterval() {
 }
 
 function watchPosition() {
-    if (!updateLocation) {
+    if (watchPositionId != null) {
+        navigator.geolocation.clearWatch(watchPositionId);
+    }
+    if (!updateLocation || !geoFindEnabled()) {
         return;
     }
     const geoposOptions = {
@@ -5383,9 +6328,6 @@ function watchPosition() {
         timeout: Infinity,
         maximumAge: 25 * 1000,
     };
-    if (watchPositionId != null) {
-        navigator.geolocation.clearWatch(watchPositionId);
-    }
     watchPositionId = navigator.geolocation.watchPosition(function(position) {
         onLocationChange(position);
         pollPositionSeconds = 60;
@@ -5393,8 +6335,10 @@ function watchPosition() {
     pollPositionInterval();
 }
 
+let geoFindInterval = null;
 function geoFindMe() {
-    if (SiteOverride || (!globeIndex && !uuid && !askLocation)) {
+    //console.trace();
+    if (!geoFindEnabled()) {
         initSitePos();
         return;
     }
@@ -5402,18 +6346,20 @@ function geoFindMe() {
     function success(position) {
         SiteLat = DefaultCenterLat = position.coords.latitude;
         SiteLon = DefaultCenterLon = position.coords.longitude;
-        if (localStorage['geoFindMeFirstVisit'] == undefined) {
+        if (loStore['geoFindMeFirstVisit'] != 'no' && !(usp.has("lat") && usp.has("lon"))) {
             OLMap.getView().setCenter(ol.proj.fromLonLat([SiteLon, SiteLat]));
-            localStorage['geoFindMeFirstVisit'] = 'no';
+            loStore['geoFindMeFirstVisit'] = 'no';
             siteCircleLayer.setVisible(true);
         }
+
         initSitePos();
         console.log('Location from browser: '+ SiteLat +', ' + SiteLon);
 
 
         {
             // always update user location every 15 minutes
-            window.setInterval(function() {
+            clearInterval(geoFindInterval);
+            geoFindInterval = window.setInterval(function() {
                 if (tabHidden)
                     return;
                 const geoposOptions = {
@@ -5445,12 +6391,7 @@ function geoFindMe() {
     }
 }
 
-window.mobilecheck = function() {
-  let check = false;
-  (function(a){if(/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i.test(a)||/1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(a.substr(0,4))) check = true;})(navigator.userAgent||navigator.vendor||window.opera);
-  return check;
-};
-
+let initSitePosFirstRun = true;
 function initSitePos() {
     // Set SitePosition
     if (SiteLat != null && SiteLon != null) {
@@ -5462,18 +6403,27 @@ function initSitePos() {
         TAR.planeMan.setColumnVis('distance', false);
     }
 
-    if (SitePosition) {
-        TAR.planeMan.cols.distance.sort();
-    } else {
-        TAR.planeMan.cols.altitude.sort();
-        TAR.planeMan.cols.altitude.sort();
+    if (initSitePosFirstRun && SitePosition) {
+        initSitePosFirstRun = false;
+        const sortBy = usp.get('sortBy');
+        if (sortBy) {
+            TAR.planeMan.cols[sortBy].sort();
+            if (usp.has('sortByReverse')) {
+                TAR.planeMan.cols[sortBy].sort();
+            }
+        } else if (SitePosition) {
+            TAR.planeMan.cols.distance.sort();
+        } else {
+            TAR.planeMan.cols.altitude.sort();
+            TAR.planeMan.cols.altitude.sort();
+        }
     }
 }
 
 /*
 function drawAlt() {
     processAircraft({hex: 'c0ffee', });
-    let plane = Planes['c0ffee'];
+    let plane = g.planes['c0ffee'];
     newWidth = 4;
     for (let i = 0; i <= 50000; i += 500) {
         plane.position = [i/10000, 0];
@@ -5485,9 +6435,11 @@ function drawAlt() {
 */
 
 function remakeTrails() {
-    for (let i in PlanesOrdered) {
-        PlanesOrdered[i].remakeTrail();
-        PlanesOrdered[i].updateFeatures(true);
+    for (let i in g.planesOrdered) {
+        const plane = g.planesOrdered[i];
+        plane.removeTrail();
+        plane.linesDrawn && (plane.drawLine = 1);
+        plane.updateFeatures();
     }
 }
 
@@ -5509,6 +6461,7 @@ function createLocationDot() {
     locationDotFeatures.addFeature(feature);
 }
 function drawSiteCircle() {
+    //console.trace();
     siteCircleFeatures.clear();
 
     if (!SitePosition)
@@ -5608,8 +6561,6 @@ let actualOutlineFeatures;
 let actualOutlineStyle;
 
 function drawOutlineJson() {
-    if (localStorage['actualOutlineLayer'] == 'false')
-        return;
     if (!receiverJson || !receiverJson.outlineJson)
         return;
     let request = jQuery.ajax({ url: 'data/outline.json',
@@ -5625,15 +6576,21 @@ function drawOutlineJson() {
         }
         if (!points || !points.length)
             return;
-        let geom = new ol.geom.LineString([[ points[0][1], points[0][0] ]]);
-        for (let j = 0; j < points.length; ++j) {
-            geom.appendCoordinate([ points[j][1], points[j][0] ]);
+        let geom = null;
+        let lastLon = null;
+        for (let j = 0; j < points.length + 1; ++j) {
+            const k = j % points.length;
+            const lat = points[k][0];
+            const lon = points[k][1];
+            const proj = ol.proj.fromLonLat([lon, lat]);
+            if (!geom || (lastLon && Math.abs(lon - lastLon) > 270)) {
+                geom = new ol.geom.LineString([proj]);
+                actualOutlineFeatures.addFeature(new ol.Feature(geom));
+            } else {
+                geom.appendCoordinate(proj);
+            }
+            lastLon = lon;
         }
-        geom.appendCoordinate([ points[0][1], points[0][0] ]);
-        geom.transform('EPSG:4326', 'EPSG:3857');
-
-        let feature = new ol.Feature(geom);
-        actualOutlineFeatures.addFeature(feature);
     });
 
     request.fail(function() {
@@ -5698,6 +6655,7 @@ function everySecond() {
     updateIconCache();
 }
 
+let getTraceTimeout = null;
 function getTrace(newPlane, hex, options) {
 
     if (options.list) {
@@ -5709,7 +6667,7 @@ function getTrace(newPlane, hex, options) {
     }
 
     if (!newPlane) {
-        newPlane = Planes[hex] || new PlaneObject(hex);
+        newPlane = g.planes[hex] || new PlaneObject(hex);
         newPlane.last_message_time = NaN;
         newPlane.position_time = NaN;
         select(newPlane, options);
@@ -5718,28 +6676,38 @@ function getTrace(newPlane, hex, options) {
     let time = new Date().getTime();
     let backoff = 200;
     if (!showTrace && !solidT && traceRate > 140 && time < lastTraceGet + backoff) {
-        setTimeout(getTrace, lastTraceGet + backoff + 20 - time, newPlane, hex, options);
+        clearTimeout(getTraceTimeout);
+        getTraceTimeout = setTimeout(getTrace, lastTraceGet + backoff + 20 - time, newPlane, hex, options);
         return newPlane;
     }
 
     lastTraceGet = time;
 
-    let URL1 = 'data/traces/'+ hex.slice(-2) + '/trace_recent_' + hex + '.json';
-    let URL2 = 'data/traces/'+ hex.slice(-2) + '/trace_full_' + hex + '.json';
+    let URL1;
+    let URL2;
     //console.log('Requesting trace: ' + hex);
+
+    // use non historic traces until 60 min after midnight
+    let today = new Date();
+    if ((showTrace || replay) && !(today.getTime() > traceDate.getTime() && today.getTime() < traceDate.getTime() + (24 * 3600 + 60 * 60) * 1000)) {
+        let dateString = traceDateString || zDateString(today);
+        URL1 = null;
+        URL2 = 'globe_history/' + dateString.replace(/-/g, '/') + '/traces/' + hex.slice(-2) + '/trace_full_' + hex + '.json';
+        traceRate += 3;
+    } else {
+        URL1 = 'data/traces/'+ hex.slice(-2) + '/trace_recent_' + hex + '.json';
+        URL2 = 'data/traces/'+ hex.slice(-2) + '/trace_full_' + hex + '.json';
+        traceRate += 2;
+    }
+    if (showTrace && trace_hist_only) {
+        let dateString = traceDateString || zDateString(today);
+        URL2 = 'globe_history/' + dateString.replace(/-/g, '/') + '/traces/' + hex.slice(-2) + '/trace_full_' + hex + '.json';
+    }
 
     traceOpts.follow = (options.follow == true);
 
     if (showTrace) {
-        traceRate += 3;
-        let today = new Date();
         //console.log(today.toUTCString() + ' ' + traceDate.toUTCString());
-        // use non historic traces for showTrace until 60 min after midnight
-        if (today.getTime() > traceDate.getTime() && today.getTime() < traceDate.getTime() + (24 * 3600 + 60 * 60) * 1000) {
-        } else {
-            URL1 = null;
-            URL2 = 'globe_history/' + traceDateString.replace(/-/g, '/') + '/traces/' + hex.slice(-2) + '/trace_full_' + hex + '.json';
-        }
 
         if (traceOpts.startHours == null || traceOpts.startHours < 0)
             traceOpts.startStamp = traceDate.getTime() / 1000;
@@ -5750,18 +6718,8 @@ function getTrace(newPlane, hex, options) {
             traceOpts.endStamp = traceDate.getTime() / 1000 + 24 * 3600;
         else
             traceOpts.endStamp = traceDate.getTime() / 1000 + traceOpts.endHours * 3600 + traceOpts.endMinutes * 60 + traceOpts.endSeconds;
-
-    } else if (replay) {
-        traceRate += 3;
-        let today = new Date();
-        if (today.getTime() > traceDate.getTime() && today.getTime() < traceDate.getTime() + (24 * 3600 + 30 * 60) * 1000) {
-        } else {
-            URL1 = null;
-            URL2 = 'globe_history/' + traceDateString.replace(/-/g, '/') + '/traces/' + hex.slice(-2) + '/trace_full_' + hex + '.json';
-        }
-    } else {
-        traceRate += 2;
     }
+
     if (newPlane && (showTrace || showTraceExit)) {
         newPlane.trace = [];
         newPlane.recentTrace = null;
@@ -5770,60 +6728,51 @@ function getTrace(newPlane, hex, options) {
 
     //console.log(URL2);
 
-    let req1 = null;
-    let req2 = null;
-
-    options.plane = newPlane;
+    //options = JSON.parse(JSON.stringify(options));
+    options.plane = `${newPlane.icao}`;
     options.defer = jQuery.Deferred();
 
-    let fake1 = false;
-
     if (URL1 && !options.onlyFull) {
-        req1 = jQuery.ajax({ url: `${URL1}`,
+        jQuery.ajax({ url: `${URL1}`,
             dataType: 'json',
             options: options,
-        });
+        })
+            .done(function(data) {
+                const options = this.options;
+                const plane = g.planes[options.plane];
+                plane.recentTrace = normalizeTraceStamps(data);
+                if (!showTrace) {
+                    plane.processTrace();
+                    if (options.follow)
+                        toggleFollow(true);
+                }
+                options.defer.resolve(options);
+                if (options.onlyRecent && options.list) {
+                    newPlane.updateLines();
+                    getTrace(null, null, options);
+                }
+                this.options = null;
+            });
     } else {
         options.defer.resolve(options);
-        fake1 = true;
     }
 
-    if (!fake1) {
-        req1.done(function(data) {
-            const options = this.options;
-            const plane = options.plane;
-            plane.recentTrace = normalizeTraceStamps(data);
-            if (!showTrace) {
-                plane.processTrace();
-                if (options.follow)
-                    toggleFollow(true);
-            }
-            options.defer.resolve(options);
-            if (options.onlyRecent && options.list) {
-                newPlane.updateLines();
-                getTrace(null, null, options);
-            }
-        });
-    }
     if (options.onlyRecent)
         return newPlane;
 
-    req2 = jQuery.ajax({ url: `${URL2}`,
+    jQuery.ajax({ url: `${URL2}`,
         dataType: 'json',
         options: options,
-    });
-
-    options.req2 = req2;
-
-    req2.done(function(data) {
+    })
+        .done(function(data) {
         const options = this.options;
-        const plane = options.plane;
+        const plane = g.planes[options.plane];
         plane.fullTrace = normalizeTraceStamps(data);
         options.defer.done(function(options) {
-            const plane = options.plane;
+            const plane = g.planes[options.plane];
             if (showTrace) {
                 legShift(0, plane);
-                if (!multiSelect) {
+                if (!multiSelect && showTraceTimestamp) {
                     gotoTime(showTraceTimestamp);
                 }
             } else {
@@ -5836,10 +6785,12 @@ function getTrace(newPlane, hex, options) {
             newPlane.updateLines();
             getTrace(null, null, options);
         }
-    });
-    req2.fail(function() {
+        options.defer = null;
+        this.options = null;
+    })
+        .fail(function() {
         const options = this.options;
-        const plane = options.plane;
+        const plane = g.planes[options.plane];
         if (showTrace)
             legShift(0, plane);
         else
@@ -5851,6 +6802,7 @@ function getTrace(newPlane, hex, options) {
             plane.getAircraftData();
             refreshSelected();
         }
+        this.options = null;
     });
 
     return newPlane;
@@ -6116,57 +7068,135 @@ function currentExtent(factor) {
 }
 
 function replayDefaults(ts) {
+    jQuery("#replayPlay").html("Pause");
     return {
-        playing: false,
+        playing: true,
         ts: ts,
         ival: 60 * 1000,
         speed: 30,
+        dateText: zDateString(ts),
         hours: ts.getUTCHours(),
         minutes: ts.getUTCMinutes(),
     };
 }
 
 function replayClear() {
+    clearTimeout(refreshId);
     reaper(true);
     refreshFilter();
+    replayPlanes = {};
 }
 
-function loadReplay(ts) {
-    let epochms = new Date().getTime();
-    if (epochms - ts.getTime() < 30 * 60 * 1000) {
-        ts = new Date(epochms - 60 * 60 * 1000);
-        replayClear();
-    }
-    replay.ts = ts;
-
+function replayGetChunk(ts) {
     let time = new Date(ts);
     let sDate = sDateString(time);
     let index = 2 * time.getUTCHours() + Math.floor(time.getUTCMinutes() / 30);
+    let key = `${sDate} chunk ${index}`;
+    let url = "globe_history/" + sDate + "/heatmap/" + index.toString().padStart(2, '0') + ".bin.ttf";
+    return { date: sDate, index: index, key: key, url: url, };
+}
 
-    let req = jQuery.ajax({
-        url: "globe_history/" + sDate + "/heatmap/" + index.toString().padStart(2, '0') + ".bin.ttf",
-        method: 'GET',
-        xhr: arraybufferRequest,
-    });
+function loadReplay(ts) {
+    if (isNaN(ts.getTime())) {
+        ts = new Date();
+    }
+    let lastAvailable = new Date();
+    lastAvailable.setUTCMinutes(Math.floor(lastAvailable.getUTCMinutes() / 30) * 30);
+    lastAvailable.setUTCSeconds(0);
+    lastAvailable = lastAvailable.getTime() - 10 * 1000;
+    if (ts.getTime() > lastAvailable) {
+        ts = new Date(lastAvailable);
+        ts.setUTCMinutes(Math.floor(ts.getUTCMinutes() / 30) * 30 + 1);
+        ts.setUTCSeconds(0);
+        console.log('not available, using this time: ' + ts);
+        replayClear();
+    }
+
+    replay.ts = ts;
+    replaySetTimeHint();
 
     setTraceDate({ts: ts});
 
-    req.done(initReplay);
-    req.fail(function(jqxhr, status, error) {
-        jQuery("#update_error_detail").text(jqxhr.status + ' --> No data for this timestamp!');
-        jQuery("#update_error").css('display','block');
-        setTimeout(function() {jQuery("#update_error").css('display','none');}, 5000);
-    });
-}
-function initReplay(data) {
-    if (!data) {
-        console.log("initReplay: no data!");
-        return;
+    if (!g.replayCache) {
+        g.replayCache = new ItemCache(onMobile ? 12 : 24);
     }
+
+    let chunk = replayGetChunk(ts);
+
+    let rKey = chunk.key;
+    let data = g.replayCache.get(rKey);
+
+    if (data) {
+        initReplay(chunk, data);
+    } else {
+        if (rKey == replay.loadingKey) {
+            // console.log('if (rKey == replay.loadingKey) {');
+            // download already in progress, do nothing
+            return;
+        }
+        if (replay.abortController) {
+            replay.abortController.abort();
+        }
+
+        replay.loadingKey = rKey;
+
+        jQuery('#replayLoading').text('Loading ...');
+
+        replay.abortController = new AbortController();
+
+        jQuery("#update_error").css('display','none');
+        clearTimeout(replay.errorTimeout);
+
+        const ff = () => {
+            //console.log(`finally ${rKey}`);
+            delete replay.loadingKey;
+            jQuery('#replayLoading').text('');
+        };
+
+        const errorFunc = (error) => {
+            ff();
+            if (error.name == 'AbortError') {
+                //console.log(`aborted: ${rKey}`);
+                return;
+            }
+            jQuery("#update_error_detail").text(error.message + ' --> No data for this timestamp!');
+            jQuery("#update_error").css('display','block');
+            replay.errorTimeout = setTimeout(() => { jQuery("#update_error").css('display','none'); }, 5000);
+        };
+
+        fetch(chunk.url, { signal: replay.abortController.signal })
+            .then(
+                (response) => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error, status = ${response.status}`);
+                    }
+                    response.arrayBuffer()
+                        .then((data) => {
+                            delete replay.abortController;
+                            g.replayCache.add(rKey, data);
+                            setTraceDate({ts: ts});
+                            initReplay(chunk, data);
+                            //console.log(`loaded: ${rKey}`);
+                            ff();
+                        })
+                        .catch(errorFunc)
+                    ;
+                },
+                errorFunc
+            )
+            .catch( errorFunc )
+        ;
+
+    }
+}
+function initReplay(chunk, data) {
     if (data.byteLength % 16 != 0) {
         console.log("Invalid heatmap file (byteLength)");
         return;
     }
+
+    replay.loadedKey = chunk.key;
+
     let points = new Int32Array(data);
     let pointsU = new Uint32Array(data);
     let pointsU8 = new Uint8Array(data);
@@ -6193,51 +7223,126 @@ function initReplay(data) {
 
     replay.ival = (replay.pointsU[replay.slices[0] + 3] & 65535) / 1000;
     replay.halfHour = (replay.ts.getUTCMinutes() >= 30) ? 1 : 0;
-    let startIndex = Math.round (((replay.ts.getUTCMinutes() % 30) * 60 + replay.ts.getUTCSeconds()) / replay.ival);
-    playReplay(true);
-    play(startIndex); // kick off first play
+    let index = Math.round (((replay.ts.getUTCMinutes() % 30) * 60 + replay.ts.getUTCSeconds()) / replay.ival);
+    //console.log("init with index" + replay.index);
+    if (index > 0) {
+        if (false && index > 1) {
+            replay.index = 0
+            replayStep("fast");
+        }
+        replay.index = index - 1;
+        replayStep("fast");
+    }
+    replay.index = index;
+    replayStep();
 }
 
-function updateReplayInterface(date) {
-    console.log(date);
-    jQuery("#replayShowing").html("Showing: " + date.toUTCString());
-}
-
-function play(index) {
+function replayOnSliderMove() {
     clearTimeout(refreshId);
-    if (!replay || !replay.playing || showTrace) {
+
+    let date = new Date(replay.dateText);
+    date.setUTCHours(Number(replay.hours));
+    date.setUTCMinutes(Number(replay.minutes));
+    replay.seconds = 0;
+    date.setUTCSeconds(Number(replay.seconds));
+    if (true || utcTimesHistoric) {
+        jQuery("#replayDateHint").html("Date: " + zDateString(date));
+        jQuery("#replayTimeHint").html("Time: " + zuluTime(date) + NBSP + 'Z');
+    } else {
+        jQuery("#replayDateHint").html("Date: " + lDateString(date));
+        jQuery("#replayTimeHint").html("Time: " + localTime(date) + NBSP + TIMEZONE);
+    }
+}
+let replayJumpEnabled = true;
+function replayJump() {
+    if (!showingReplayBar)
+        return;
+    if (!replayJumpEnabled)
+        return;
+    let date = new Date(replay.dateText);
+    date.setUTCHours(Number(replay.hours));
+    date.setUTCMinutes(Number(replay.minutes));
+    date.setUTCSeconds(Number(replay.seconds));
+
+    let ts = new Date(replay.ts.getTime());
+
+    // diff less 10 seconds
+    if (Math.abs(date.getTime() - ts.getTime()) < 10000) {
+        return;
+    }
+    //console.log(replay.minutes.toString() + ' ' + ts.toString() + ' ' + (date.getTime() - ts.getTime()).toString());
+
+    //console.trace();
+    console.log('jump: ' + date.toUTCString());
+
+    replayClear();
+    loadReplay(date);
+}
+function replaySetTimeHint(arg) {
+    replayJumpEnabled = false;
+    let dateString;
+    let timeString;
+
+    dateString = zDateString(replay.ts);
+    timeString = zuluTime(replay.ts) + NBSP + 'Z';
+
+    jQuery("#replayDateHint").html("Date: " + dateString);
+    jQuery("#replayTimeHint").html("Time: " + timeString);
+    if (replay.datepickerDate != dateString) {
+        replay.datepickerDate = dateString;
+        jQuery("#replayDatepicker").datepicker('setDate', dateString);
+    }
+
+
+    let hours = replay.ts.getUTCHours();
+    jQuery('#hourSelect').slider("option", "value", hours);
+
+    let minutes = replay.ts.getUTCMinutes();
+    jQuery('#minuteSelect').slider("option", "value", minutes);
+    replayJumpEnabled = true;
+}
+
+function replayStep(arg) {
+    if (!replay || showTrace) {
+        return;
+    }
+    if (replay.loadedKey != replayGetChunk(replay.ts).key) {
+        console.error('no data loaded for current timestamp, can\'t play!');
         return;
     }
 
-    refreshId = setTimeout(play, replay.ival / replay.speed * 1000);
-    playReplay(true);
-
-    if (index == null) {
-        index = replay.index + 1;
+    if (replay.playing) {
+        clearTimeout(refreshId);
+        refreshId = setTimeout(replayStep, replay.ival / replay.speed * 1000);
     }
+
+    if (isNaN(replay.ts.getTime())) {
+        loadReplay(new Date());
+        return;
+    }
+    let index = replay.index;
     if (index >= replay.slices.length) {
+        console.log('next half hour');
         let date = new Date(replay.ts.getTime() + 30 * 60 * 1000);
         date.setUTCMinutes(Math.floor(date.getUTCMinutes() / 30) * 30);
         date.setUTCSeconds(0);
-        if (new Date().getTime() - date.getTime() > 30 * 60 * 1000) {
-            loadReplay(date);
-            return;
-        } else {
-            index = 0;
-            replayClear();
-        }
+        clearTimeout(refreshId);
+        loadReplay(date);
+        return;
     }
-    replay.index = index;
 
-    //console.log(replay.ts);
+    let minutes = replay.halfHour * 30 + Math.floor(replay.ival * index / 60);
+    let seconds = (replay.ival * index) % 60;
+    //console.log(minutes.toString() + ' ' + seconds.toString());
+    replay.ts.setUTCMinutes(minutes)
+    replay.ts.setUTCSeconds(seconds)
 
-    let date = new Date(replay.ts);
-    date.setUTCMinutes(replay.halfHour * 30 + replay.ival * replay.index / 60);
-    date.setUTCSeconds(0);
-
-    updateReplayInterface(date);
+    replay.hours = replay.ts.getUTCHours();
+    replay.minutes = minutes;
+    replay.seconds = seconds;
 
     let points = replay.points;
+    let pointsU = replay.pointsU;
     let i = replay.slices[index];
 
     //console.log('index: ' + index + ', i: ' + i);
@@ -6249,9 +7354,28 @@ function play(index) {
 
     replay.ival = (replay.pointsU[i + 3] & 65535) / 1000;
 
+    if (arg != 'fast') {
+        replaySetTimeHint();
+        if (replay.addressMinutes != replay.minutes) {
+            replay.addressMinutes = replay.minutes;
+            updateAddressBar();
+        }
+        //console.log(replay.ts.toUTCString());
+        if (now - lastReap > 60) {
+            reaper();
+        }
+    }
+
     i += 4;
 
-    let ext = currentExtent(1.4);
+    let ext;
+    if (zoomLvl > 10) {
+        ext = currentExtent(1.6);
+    } else if (zoomLvl > 8) {
+        ext = currentExtent(1.2);
+    } else {
+        ext = currentExtent(1.1);
+    }
     ext.maxLat *= 1e6;
     ext.maxLon *= 1e6;
     ext.minLat *= 1e6;
@@ -6261,16 +7385,20 @@ function play(index) {
         let lon = points[i + 2];
         let pos = [lon, lat];
         if (lat >= 1073741824) {
-            let ac = {seen:0, seen_pos:0,};
-            ac.hex = (points[i] & ((1<<24) - 1)).toString(16).padStart(6, '0');
-            ac.hex = (points[i] & (1<<24)) ? ('~' + ac.hex) : ac.hex;
-            ac.flight = "";
+            let hex = (points[i] & ((1<<24) - 1)).toString(16).padStart(6, '0');
+            hex = (points[i] & (1<<24)) ? ('~' + hex) : hex;
+            let ac = {hex:hex, seen:0, seen_pos:0,};
             if (replay.pointsU8[4 * (i + 2)] != 0) {
+                ac.flight = "";
                 for (let j = 0; j < 8; j++) {
                     ac.flight += String.fromCharCode(replay.pointsU8[4 * (i + 2) + j]);
                 }
             }
-            ac.squawk = (lat ^ (1<<30)).toString(10).padStart(4, '0');
+            ac.squawk = (lat & 0xFFFF).toString(10).padStart(4, '0');
+            if (!g.planes[hex]) {
+                replayPlanes[hex] = ac;
+                continue;
+            }
             processAircraft(ac, false, false);
             continue;
         }
@@ -6282,9 +7410,28 @@ function play(index) {
         lon /= 1e6;
         pos = [lon, lat];
 
-        let hex = (points[i] & ((1<<24) - 1)).toString(16).padStart(6, '0');
-        hex = (points[i] & (1<<24)) ? ('~' + hex) : hex;
+        let type = (pointsU[i] >> 27) & 0x1F;
+        switch (type) {
+            case  0: type = 'adsb_icao';        break;
+            case  1: type = 'adsb_icao_nt';     break;
+            case  2: type = 'adsr_icao';        break;
+            case  3: type = 'tisb_icao';        break;
+            case  4: type = 'adsc';             break;
+            case  5: type = 'mlat';             break;
+            case  6: type = 'other';            break;
+            case  7: type = 'mode_s';           break;
+            case  8: type = 'adsb_other';       break;
+            case  9: type = 'adsr_other';       break;
+            case 10: type = 'tisb_trackfile';   break;
+            case 11: type = 'tisb_other';       break;
+            case 12: type = 'mode_ac';          break;
+            default: type = 'unknown';
+        }
+        let hex = (pointsU[i] & 0xFFFFFF).toString(16).padStart(6, '0');
+        hex = (pointsU[i] & 0x1000000) ? ('~' + hex) : hex;
 
+        if (icaoFilter && !icaoFilter.includes(hex))
+            continue;
 
         let alt = points[i + 3] & 65535;
         if (alt & 32768)
@@ -6300,24 +7447,35 @@ function play(index) {
         else
             gs /= 10;
 
-        if (icaoFilter && !icaoFilter.includes(hex))
-            continue;
-
         let ac = {
             seen: 0,
             seen_pos: 0,
-            hex: hex,
-            lat: lat,
-            lon: lon,
-            alt_baro: alt,
-            gs: gs,
         };
+
+        if (!g.planes[hex]) {
+            const cached = replayPlanes[hex];
+            if (cached) {
+                ac = cached;
+                //delete replayPlanes[hex];
+            }
+        }
+
+        ac.hex = hex;
+        ac.lat = lat;
+        ac.lon = lon;
+        ac.alt_baro = alt;
+        ac.gs = gs;
+        ac.type = type;
+
         processAircraft(ac, false, false);
     }
 
-    triggerRefresh = 1;
-    checkMovement();
-    checkRefresh();
+    if (arg != "fast") {
+        triggerRefresh = 1;
+        checkMovement();
+        checkRefresh();
+    }
+    replay.index = index + 1;
 }
 
 function updateIconCache() {
@@ -6398,16 +7556,19 @@ function updateMessageRate(data) {
         MessageCountHistory.push({ 'time' : data.now, 'messages' : data.messages});
 
         if (MessageCountHistory.length > 1) {
+            // .. and clean up any old values
+            while ((now - MessageCountHistory[0].time) > 10.5) {
+                MessageCountHistory.shift();
+            }
             let message_time_delta = MessageCountHistory[MessageCountHistory.length-1].time - MessageCountHistory[0].time;
             let message_count_delta = MessageCountHistory[MessageCountHistory.length-1].messages - MessageCountHistory[0].messages;
-            if (message_time_delta > 0)
+            if (message_time_delta > 0) {
                 MessageRate = message_count_delta / message_time_delta;
+            }
+            //console.log(message_time_delta);
         }
 
-        // .. and clean up any old values
-        if ((now - MessageCountHistory[0].time) > 10)
-            MessageCountHistory.shift();
-    } else if (uuid != null) {
+    } else if (uuid != null && data.messages == 1) {
         const cache = uuidCache[data.urlIndex] || { now: 0 };
         let time_delta = now - cache.now;
         if (time_delta > 0.5) {
@@ -6439,89 +7600,116 @@ function playReplay(state){
         return;
     }
     if (state) {
+        if (replay.loadedKey != replayGetChunk(replay.ts).key) {
+            console.error('no data loaded for current timestamp, can\'t play!');
+            return;
+        }
         replay.playing = true;
         jQuery("#replayPlay").html("Pause");
+        replayStep();
     } else {
         replay.playing = false;
         jQuery("#replayPlay").html("Play");
+        clearTimeout(refreshId);
     }
 };
 
-function replaySetTimeHint() {
-    jQuery('#timeHint').text('Time: '
-        + replay.hours.toString().padStart(2, '0') + ':'
-        + replay.minutes.toString().padStart(2, '0'));
-}
 function showReplayBar(){
     console.log('showReplayBar()');
-    if (showingReplayBar){
-        // If you can see it, hide it
+    showingReplayBar = !showingReplayBar;
+    if (!showingReplayBar){
         jQuery("#replayBar").hide();
-        showingReplayBar = false;
         replay = null;
         jQuery('#map_canvas').height('100%');
+        jQuery('#sidebar_canvas').height('100%');
+        jQuery("#selected_showTrace_hide").show();
     } else {
-        // If it's hidden, show it and change the currently selected date to be an hour ago
         jQuery("#replayBar").show();
         jQuery("#replayBar").css('display', 'grid');
         jQuery('#replayBar').height('100px');
         jQuery('#map_canvas').height('calc(100% - 100px)');
-        let ts = new Date();
-        ts.setUTCHours(ts.getUTCHours() - 1);
+        jQuery('#sidebar_canvas').height('calc(100% - 110px)');
         if (!replay) {
-            replay = replayDefaults(ts);
+            replay = replayDefaults(new Date());
             replay.playing = false;
         }
-        ts = new Date(replay.ts);
-        ts.setUTCMinutes((parseInt((ts.getUTCMinutes() + 7.5)/15) * 15) % 60);
-        jQuery("#replayDatepicker").datepicker('setDate', ts);
+        //ts.setUTCMinutes((parseInt((ts.getUTCMinutes() + 7.5)/15) * 15) % 60);
+        let datepickerOptions = {
+            maxDate: '+1d',
+            dateFormat: "yy-mm-dd",
+            autoSize: true,
+            onSelect: function(dateText) {
+                replay.dateText = dateText;
+                replayJump();
+            },
+        };
+        if (onMobile) {
+            datepickerOptions.onClose = function(dateText, inst){
+                jQuery("replayDatepicker").attr("disabled", false);
+            };
+            datepickerOptions.beforeShow = function(input, inst){
+                jQuery("replayDatepicker").attr("disabled", true);
+            };
+        } else {
+            //
+        }
 
-        showingReplayBar = true;
+        jQuery("#replayDatepicker").datepicker(datepickerOptions);
+
         jQuery('#hourSelect').slider({
-            value: ts.getUTCHours(),
             step: 1,
             min: 0,
             max: 23,
             slide: function(event, ui) {
                 replay.hours = ui.value;
-                replaySetTimeHint();
+                replayOnSliderMove();
             },
+            change: function() {
+                replayJump();
+            }
         });
         jQuery('#minuteSelect').slider({
-            value: ts.getUTCMinutes(),
             step: 1,
             min: 0,
             max: 59,
             slide: function(event, ui) {
                 replay.minutes = ui.value;
-                replaySetTimeHint();
+                replayOnSliderMove();
             },
+            change: function() {
+                replayJump();
+            }
         });
-        replaySetTimeHint();
         const slideBase = 3.0;
-        jQuery('#speedSelect').slider({
+        jQuery('#replaySpeedSelect').slider({
             value: Math.pow(replay.speed, 1 / slideBase),
             step: 0.07,
             min: Math.pow(1, 1 / slideBase),
-            max: Math.pow(100, 1 / slideBase),
+            max: Math.pow(250, 1 / slideBase),
             slide: function(event, ui) {
                 replay.speed = Math.pow(ui.value, slideBase).toFixed(1);
-                jQuery('#speedHint').text('Speed: ' + replay.speed + 'x');
+                jQuery('#replaySpeedHint').text('Speed: ' + replay.speed + 'x');
+            },
+            change: function(event, ui) {
+                replayStep();
             },
         });
-        jQuery('#speedHint').text('Speed: ' + replay.speed + 'x');
+        jQuery('#replaySpeedHint').text('Speed: ' + replay.speed + 'x');
+
+        jQuery("#selected_showTrace_hide").hide();
     }
 };
 
-function isDarkModeEnabled() {
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-}
-
 function timeoutFetch() {
+    console.log('timeoutFetch');
     fetchData();
-    timers.checkMove = setTimeout(timeoutFetch, Math.max(RefreshInterval, 10000));
-    if (lastReap - now > 90000)
+    if (timers.timeoutFetch) {
+        clearTimeout(timers.checkMove);
+    }
+    timers.timeoutFetch = setTimeout(timeoutFetch, Math.max(RefreshInterval, 10000));
+    if (now - lastReap > 120) {
         reaper();
+    }
 }
 
 function handleVisibilityChange() {
@@ -6531,46 +7719,62 @@ function handleVisibilityChange() {
     else
         tabHidden = false;
 
-    if (tabHidden) {
+    if (tabHidden && !prevHidden) {
         clearIntervalTimers();
         if (!globeIndex) {
             timeoutFetch();
+        }
+
+        replay_was_active = replay.playing;
+        if (replay.playing) {
+            playReplay(false);
         }
     }
 
     // tab is no longer hidden
     if (!tabHidden && prevHidden) {
-
-        globeRateUpdate();
-        clearIntervalTimers();
-        setIntervalTimers();
-
-        active();
-
-        refresh();
-        fetchData();
-
-        if (showTrace)
-            return;
-        if (heatmap)
-            return;
-
-        if (!globeIndex)
-            return;
-
-        let count = 0;
-        if (multiSelect && !SelectedAllPlanes) {
-            for (let i = 0; i < PlanesOrdered.length; ++i) {
-                let plane = PlanesOrdered[i];
-                if (plane.selected) {
-                    getTrace(plane, plane.icao, {});
-                    if (count++ > 20)
-                        break;
-                }
-            }
-        } else if (SelectedPlane) {
-            getTrace(SelectedPlane, SelectedPlane.icao, {});
+        if (loadFinished) {
+            jQuery("#timers_paused").css('display','none');
         }
+        globeRateUpdate().done(noLongerHidden);
+
+    }
+}
+
+function noLongerHidden() {
+
+    clearIntervalTimers();
+    setIntervalTimers();
+
+    active();
+
+    refresh();
+    fetchData();
+
+    if (replay_was_active) {
+        playReplay(true);
+    }
+
+    if (showTrace)
+        return;
+    if (heatmap)
+        return;
+
+    if (!globeIndex)
+        return;
+
+    let count = 0;
+    if (multiSelect && !SelectedAllPlanes) {
+        for (let i = 0; i < g.planesOrdered.length; ++i) {
+            let plane = g.planesOrdered[i];
+            if (plane.selected) {
+                getTrace(plane, plane.icao, {});
+                if (count++ > 20)
+                    break;
+            }
+        }
+    } else if (SelectedPlane) {
+        getTrace(SelectedPlane, SelectedPlane.icao, {});
     }
 }
 
@@ -6610,33 +7814,525 @@ function testUnhide() {
 }
 
 function selectClosest() {
-    if (!SitePosition)
+    if (!loadFinished)
         return;
     let closest = null;
-    for (let key in PlanesOrdered) {
-        const plane = PlanesOrdered[key];
-        if (!closest || closest.sitedist == null || (plane.sitedist != null && plane.sitedist < closest.sitedist)) {
-            closest = PlanesOrdered[key];
+    let closestDistance = null;
+    checkMovement();
+    for (let key in g.planesOrdered) {
+        const plane = g.planesOrdered[key];
+        if (!closest)
+            closest = plane;
+        if (plane.position == null || !plane.visible)
+            continue;
+        const dist = ol.sphere.getDistance([CenterLon, CenterLat], plane.position);
+        if (dist == null || isNaN(dist))
+            continue;
+        if (closestDistance == null || dist < closestDistance) {
+            closestDistance = dist;
+            closest = plane;
         }
     }
     if (!closest)
         return;
-    selectPlaneByHex(closest.icao, {noDeselect: true});
+    selectPlaneByHex(closest.icao, {noDeselect: true, follow: FollowSelected,});
 }
 function setAutoselect() {
     clearInterval(timers.autoselect);
     if (!autoselect)
         return;
-    timers.autoselect = window.setInterval(selectClosest, 10000);
+    timers.autoselect = window.setInterval(selectClosest, 5000);
     selectClosest();
 }
 function registrationLink(plane) {
-    if (plane.icaorange.country === 'Brazil') {
+    if (plane.country === 'Brazil') {
         return `https://sistemas.anac.gov.br/aeronaves/cons_rab_resposta_en.asp?textMarca=${plane.registration}`;
     } else {
         return '';
     }
 }
+
+
+//simple jquery plugin to only update the text when it changes
+jQuery.fn.updateText = function (text) {
+    this.text() !== String(text) && this.text(text);
+}
+
+function zeroPad(num, size) {
+    var s = num + "";
+    while (s.length < size) s = "0" + s;
+    return s;
+}
+
+// Converts "hiccup"-style structures (https://github.com/weavejester/hiccup)
+// to XML.
+function hiccup(node) {
+    if (Array.isArray(node)) {
+        const [tag, attribs, ...children] = node;
+        let attribStrings = [];
+        for (const prop in attribs) {
+            if (!attribs.hasOwnProperty(prop) || attribs[prop] === undefined) {
+                continue;
+            }
+            attribStrings.push(`${prop}="${attribs[prop]}"`);
+        }
+        let xml = `<${tag} ${attribStrings.join(' ')}>`;
+        for (const child of children) {
+            xml += hiccup(child);
+        }
+        xml += `</${tag}>\n`;
+        return xml;
+    } else {
+        return '' + node;
+    }
+}
+
+// Prompts a browser to download a data: URL.
+function download(name, contentType, data) {
+    var link = document.createElement("a");
+    link.download = name;
+    link.href = 'data:' + contentType + ',' + encodeURIComponent(data);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function baseExportFilenameForAircrafts(aircrafts) {
+    return aircrafts.map((a) => (a.registration || a.icao).toUpperCase()).join('-');
+}
+
+// Returns an array of {pos, alt, ts} for an aircraft.
+function coordsForExport(plane) {
+    let coords = [];
+    let numSegs = plane.track_linesegs.length;
+    let segs = plane.track_linesegs;
+    let runningAverage = 0;
+    let lastTimestamp = 0;
+    let delta;
+    //console.log(kmlStyle);
+    if (kmlStyle == 'geom_avg') {
+        //console.log('averaging');
+        const avgWindow = 8;
+        for (let i = 0; i < numSegs; i++) {
+            const seg = segs[i];
+            const geom = seg.alt_geom;
+            const baro = seg.alt_real;
+            let geomOffset = null;
+            if (!seg.ground && baro != null && geom != null) {
+                seg.geomOffset = geom - baro;
+                delta = (seg.geomOffset - runningAverage);
+                if (delta <= 50) {
+                    runningAverage += delta * Math.min(1, (seg.ts - lastTimestamp) / avgWindow);
+                } else {
+                    runningAverage = seg.geomOffset;
+                }
+                seg.geomOffAverage = runningAverage;
+                lastTimestamp = seg.ts;
+            }
+        }
+        lastTimestamp = 1e12;
+        for (let i = numSegs - 1; i >= 0; i--) {
+            const seg = segs[i];
+            const geom = seg.alt_geom;
+            const baro = seg.alt_real;
+            let geomOffset = null;
+            if (seg.geomOffset != null) {
+                delta = (seg.geomOffset - runningAverage);
+                if (delta <= 50) {
+                    runningAverage += delta * Math.min(1, (lastTimestamp - seg.ts) / avgWindow);
+                } else {
+                    runningAverage = seg.geomOffset;
+                }
+                //console.log(seg.geomOffAverage + ' ' + runningAverage);
+                seg.geomOffAverage = (seg.geomOffAverage + runningAverage) / 2;
+                lastTimestamp = seg.ts;
+            }
+        }
+    }
+    for (let i = 0; i < numSegs; i++) {
+        const seg = segs[i];
+        const pos = seg.position;
+        if (pos) {
+            let alt = null;
+            const baro = seg.alt_real;
+            const geom = seg.alt_geom;
+            const geomOffAverage = seg.geomOffAverage;
+            let using_baro = false;
+            if (kmlStyle == 'geom_avg' && geomOffAverage != null) {
+                const betterGeom = baro + geomOffAverage;
+                alt = Math.round(betterGeom * 0.3048); // convert ft to m
+            } else if (kmlStyle != 'baro' && geom != null) {
+                alt = Math.round(geom * 0.3048); // convert ft to m
+            } else if (kmlStyle == 'baro' && baro != null && baro != 'ground') {
+                alt = Math.round(baro * 0.3048);
+                using_baro = true;
+            }
+            if (seg.ground) {
+                alt = "ground";
+            } else if (alt != null && egmLoaded && !using_baro) {
+                // alt is in meters at this point
+                alt = Math.round(egm96.ellipsoidToEgm96(pos[1], pos[0], alt));
+            }
+
+            const ts = new Date(seg.ts * 1000.0);
+            if (alt == null) {
+                console.log(`Skipping, no altitude: ${i} ${pos} ${ts}`);
+                continue;
+            }
+            //console.log(`exporting coord: ${i} ${pos} ${alt} ${ts}`);
+            coords.push({ pos: pos, alt: alt, ts: ts});
+        } else {
+            console.log(`Skipping ${i}`);
+        }
+    }
+    return coords;
+}
+
+// We use this to give each aircraft a different color track in a
+// multi-select export scenario. From colorbrewer, but I moved the red
+// to be first.
+const EXPORT_RGB_COLORS = [
+    'e31a1c',
+    'a6cee3',
+    '1f78b4',
+    'b2df8a',
+    '33a02c',
+    'fb9a99',
+    'fdbf6f',
+    'ff7f00',
+    'cab2d6',
+    '6a3d9a',
+    'ffff99',
+    'b15928'
+];
+
+// Converts "rrggbb" colors to KML format, "aabbggrr".
+let RGBColorToKMLColor = function(c) {
+    return 'ff' + c.substring(4, 6) + c.substring(2, 4) + c.substring(0, 2);
+}
+
+// Returns an array of selected planes, ordered by registration-or-ICAO.
+function selectedPlanes() {
+    const planes = [];
+    for (let key in SelPlanes) {
+        let plane = SelPlanes[key];
+        if (plane.selected) {
+            planes.push(plane);
+        }
+    }
+    planes.sort((a, b) => {
+        const keyA = (a.registration || a.icao).toUpperCase();
+        const keyB = (b.registration || b.icao).toUpperCase();
+        if (keyA < keyB) return -1;
+        if (keyA > keyB) return 1;
+        return 0;
+    });
+    return planes;
+}
+
+// Exports currently selected aircraft as KML.
+
+let egmScript = null;
+let egmLoaded = false;
+function loadEGM() {
+    if (egmScript) {
+        return null;
+    }
+    egmScript = document.createElement('script');
+    egmScript.src = "libs/egm96-universal-1.1.0.min.js";
+    egmScript.addEventListener('load', function() {
+        egmLoaded = true;
+    });
+    document.body.appendChild(egmScript);
+    return egmScript;
+}
+function adjust_geom_alt(alt, pos) {
+    if (geomUseEGM && egmLoaded) {
+        if (alt == null) {
+            return alt;
+        }
+        return egm96.ellipsoidToEgm96(pos[1], pos[0], alt * 0.3048) / 0.3048;
+    } else {
+        return alt;
+    }
+}
+let kmlStyle = '';
+function exportKML(altStyle) {
+    if (altStyle) {
+        kmlStyle = altStyle;
+    }
+    if (!egmLoaded) {
+        let egm = loadEGM();
+        if (egm) {
+            egm.addEventListener('load', function() {
+                exportKML();
+            });
+        }
+        return;
+    }
+
+    const planes = selectedPlanes();
+    const folders = [];
+    for (let planeIndex = 0; planeIndex < planes.length; planeIndex++) {
+        const plane = planes[planeIndex];
+        let folder = ["Folder", {},
+            ["name", {}, `${(plane.registration || plane.icao).toUpperCase()} track`]
+        ];
+        const coords = coordsForExport(plane);
+        let sections = [];
+        let currentSection = null;
+        let lastGround = null;
+        let lastC = null;
+        for (let i in coords) {
+            const c = coords[i];
+            const ground = (c.alt == "ground");
+            if (ground !== lastGround) {
+                // when changing between airborne and ground, create new section
+                if (lastC && currentSection) {
+                    // double up last coordinate to work around strange google earth transparency
+                    currentSection.coords.push(lastC);
+                }
+                currentSection = { ground: ground, coords: [] };
+                sections.push(currentSection);
+            }
+            lastGround = ground;
+            if (ground) {
+                c.alt = 0; // set KML altitude to zero
+            }
+            currentSection.coords.push(c);
+            lastC = c;
+        }
+        if (lastC && currentSection) {
+            // double up last coordinate to work around strange google earth transparency
+            currentSection.coords.push(lastC);
+        }
+        for (let i in sections) {
+            console.log("section " + i);
+            const s = sections[i];
+            const coords = s.coords;
+            const ground = s.ground;
+            const whenObjs = coords.map((c) => {
+                const date = `${c.ts.getUTCFullYear()}-${zeroPad(c.ts.getUTCMonth() + 1, 2)}-${zeroPad(c.ts.getUTCDate(), 2)}`;
+                const time = `T${zeroPad(c.ts.getUTCHours(), 2)}:${zeroPad(c.ts.getUTCMinutes(), 2)}:${zeroPad(c.ts.getUTCSeconds(), 2)}.${zeroPad(c.ts.getUTCMilliseconds(), 3)}Z`;
+                return ["when", {}, date + time];
+            });
+            const coordObjs = coords.map((c) => {
+                return ["gx:coord", {}, `${c.pos[0]} ${c.pos[1]} ${c.alt}`];
+            });
+            // splice together the xml track with / without altitude mode
+            // clamptoground is google earth default while other programs error on having that option set specifically
+            // so let google earth default to clamp to ground for ground track
+            let xmlTrack = ["gx:Track", {}];
+            if (!ground) {
+                xmlTrack.push(["altitudeMode", {}, "absolute"]);
+            }
+            xmlTrack = xmlTrack.concat([
+                ["extrude", {}, ground ? "0" : "1"],
+                ...whenObjs,
+                ...coordObjs
+            ]);
+            folder.push(
+                ["Placemark", {},
+                    ["name", {}, (plane.registration || plane.icao).toUpperCase()],
+                    ["Style", {},
+                        ["LineStyle", {},
+                            ["color", {}, RGBColorToKMLColor(EXPORT_RGB_COLORS[planeIndex % EXPORT_RGB_COLORS.length])],
+                            ["width", {}, 4]
+                        ],
+                        ["IconStyle", {},
+                            ["Icon", {},
+                                ["href", {}, "http://maps.google.com/mapfiles/kml/shapes/airports.png"]
+                            ]
+                        ]
+                    ],
+                    xmlTrack
+                ]
+            );
+        }
+        folders.push(folder);
+    }
+    const filename = baseExportFilenameForAircrafts(planes);
+    const prologue = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    const xmlObj = ["kml", {
+        "xmlns": "http://www.opengis.net/kml/2.2",
+        "xmlns:gx": "http://www.google.com/kml/ext/2.2"
+    },
+        ["Folder", {},
+            ...folders
+        ]
+    ];
+    const xml = prologue + hiccup(xmlObj);
+    let styleName = '';
+    if (kmlStyle == 'geom') { styleName = 'EGM96'; };
+    if (kmlStyle == 'geom_avg') { styleName = 'EGM96_avg'; };
+    if (kmlStyle == 'baro') { styleName = 'press_alt_uncorrected'; };
+    //console.log(kmlStyle + ' ' + styleName);
+    download(
+        filename + '-track-' + styleName + '.kml',
+        'application/vnd.google-earth.kml+xml',
+        xml);
+}
+
+function deleteTraces() {
+    for (let i in g.planesOrdered) {
+        let plane = g.planesOrdered[i];
+        delete plane.recentTrace;
+        delete plane.fullTrace;
+    }
+}
+
+function setPictureVisibility() {
+    showPictures = planespottersAPI || planespottingAPI;
+    if (showPictures) {
+        jQuery('#photo_container').removeClass('hidden');
+    } else {
+        jQuery('#photo_container').addClass('hidden');
+    }
+    if (planespottersLinks && !showPictures) {
+        jQuery('#photoLinkRow').removeClass('hidden');
+    } else {
+        jQuery('#photoLinkRow').addClass('hidden');
+    }
+}
+
+// just an idea, unused
+let infoBits = {
+    type: {
+        head: 'Type:',
+        title: '4 character ICAO type code (i.e.: A320,B738,G550)',
+        value: function(plane) { return plane.icaoType || 'n/a'; },
+    },
+};
+
+function geoFindEnabled() {
+    return (!disableGeoLocation && !SiteOverride && (globeIndex || uuid || askLocation) && (window && window.location && window.location.protocol == 'https:'));
+}
+
+function _printTrace(trace) {
+    for (let i = 0; i < trace.length; i++) {
+        const state = trace[i];
+        const timestamp = state[0];
+        let stale = state[6] & 1;
+        const leg_marker = state[6] & 2;
+        console.log(zuluTime(new Date(timestamp * 1000)) + ' ' + (state[1] + ',' + state[2]).padStart(26, ' ')  + ' ' + String(state[3]).padStart(6, ' ') + ' ' + state[6]);
+    }
+}
+
+function printTrace() {
+    console.log('full trace');
+    _printTrace(SelectedPlane.fullTrace.trace);
+    console.log('recent trace');
+    _printTrace(SelectedPlane.recentTrace.trace);
+}
+
+
+// Create a "hidden" input
+let shareLinkInput = document.createElement("input");
+// Append it to the body
+document.body.appendChild(shareLinkInput);
+
+function copyShareLink() {
+    // Assign shareLinkInput the value we want to copy
+    shareLinkInput.setAttribute("value", shareLink);
+
+    // Highlight its content
+    shareLinkInput.select();
+    // Copy the highlighted text
+    document.execCommand("copy");
+    // deselect input field
+    shareLinkInput.blur();
+
+    copyLinkTime = new Date().getTime();
+    copiedIcao = SelectedPlane.icao;
+    setSelectedIcao();
+}
+
+let copyLinkTime = 0;
+let copiedIcao = null;
+
+function setSelectedIcao() {
+    const selected = SelectedPlane;
+    if (selected.icao == selIcao && copiedIcao == null) {
+        return;
+    }
+    selIcao = selected.icao;
+    let hex_html = "<span style='font-family: monospace;' class=identSmall>Hex:" + NBSP + selected.icao.toUpperCase() + "</span>";
+    if (globeIndex || shareBaseUrl) {
+        if (copiedIcao && (copiedIcao != selected.icao || new Date().getTime() - copyLinkTime > 2000)) {
+            copiedIcao = null;
+        }
+        let copy_link_text = (copiedIcao != null) ? "Copied" : ("Copy" + NBSP + "Link");
+        let icao_link = "<span  class=identSmall><a class='link identSmall' target=\"_blank\" href=\"" + shareLink +
+            "\" onclick=\"copyShareLink(); return false;\">" + copy_link_text + "</a></span>";
+        hex_html = hex_html + NBSP + NBSP + NBSP + icao_link;
+    }
+    jQuery('#selected_icao').html(hex_html);
+
+    jQuery('a.identSmall').prop('href',shareLink);
+}
+
+function mapTypeSettings() {
+    if (MapType_tar1090.startsWith('maptiler_sat') || MapType_tar1090.startsWith('maptiler_hybrid')) {
+        layerExtraDim = -0.30;
+    } else if (MapType_tar1090.startsWith('carto_raster')) {
+        layerExtraDim = -0.15;
+        layerExtraContrast = 0.6;
+    } else if (MapType_tar1090.startsWith('carto_light')) {
+        layerExtraDim = -0.05;
+        layerExtraContrast = 0.2;
+    } else {
+        layerExtraDim = 0;
+        layerExtraContrast = 0;
+    }
+}
+
+function getViewOversize(factor) {
+    factor || (factor = 1);
+    let mapSize = OLMap.getSize();
+    let size = [mapSize[0] * factor, mapSize[1] * factor];
+    return myExtent(OLMap.getView().calculateExtent(size));
+}
+
+function getRenderExtent(extra) {
+    extra || (extra = 0);
+    const mapSize = OLMap.getSize();
+    const over = renderBuffer + extra;
+    const size = [mapSize[0] + over, mapSize[1] + over];
+    return myExtent(OLMap.getView().calculateExtent(size));
+}
+
+function requestBoxString() {
+    if (!mapIsVisible && lastRequestBox) {
+        return lastRequestBox;
+    }
+    let extent = getRenderExtent(80);
+    let minLon = extent.minLon.toFixed(6);
+    let maxLon = extent.maxLon.toFixed(6);
+    if (Math.abs(extent.extent[2] - extent.extent[0]) > 40075016) { // all longtitudes in view
+        minLon = -180, maxLon = 180;
+    }
+    return `${extent.minLat.toFixed(6)},${extent.maxLat.toFixed(6)},${minLon},${maxLon}`;
+}
+
+if (adsbexchange && window.location.hostname.startsWith('inaccurate')) {
+    jQuery('#inaccurate_warning').removeClass('hidden');
+    document.getElementById('inaccurate_warning').innerHTML = `
+<br>
+This map includes inaccurate / very approximate positions, errors of 200 nmi or more are not unusual.
+<br>
+If no ADS-B / MLAT info is available but at least 1 receiver is receiving ModeS data from a hex, the aircraft is placed where the receiving station on average receives planes which do have a location.
+<br>
+Please add a disclaimer to any screenshots of this website or better yet just report that an aircraft was spotted in the approximate area WITHOUT using screenshots.
+<br>
+<br>
+        `;
+
+}
+
+function getn(n) {
+    limitUpdates=n; RefreshInterval=0; fetchCalls=0;
+}
+
 
 parseURLIcaos();
 initialize();

@@ -164,6 +164,7 @@ select {
     cursor: ew-resize;
     display: block;
     position: absolute;
+    z-index: 99;
     top:  calc( 5px * var(--SCALE));
     left: calc( 0px * var(--SCALE));
     float: right;
@@ -233,15 +234,29 @@ select {
     font-size: var(--FS1);
 }
 
+.warning {
+    margin-top: 1em;
+    border: calc( 2px * var(--SCALE)) solid yellow;
+    background-color: #FFFFA3;
+    padding: calc( 5px * var(--SCALE));
+    color: black;
+}
 
 .error_box {
-    position: absolute; bottom: calc( 25px * var(--SCALE)); left: calc( 25px * var(--SCALE)); border: calc( 2px * var(--SCALE)) solid red;
+    position: absolute; bottom: calc( 90px * var(--SCALE)); left: calc( 25px * var(--SCALE)); border: calc( 2px * var(--SCALE)) solid red;
     background-color: #FFFFA3; opacity: 0.75; filter:alpha(opacity=75); padding: calc( 5px * var(--SCALE));
     color: black;
     font-weight: bold;
     font-size: var(--FS3);
     line-height: 150%;
     text-align: center;
+}
+
+.inaccurate_warning {
+    position: absolute; top: calc( 25px * var(--SCALE)); left: calc( 280px * var(--SCALE));
+    width: 50%;
+    background-color: var(--BGCOLOR1);
+    padding: calc( 5px * var(--SCALE));
 }
 
 #js_error {
@@ -258,8 +273,7 @@ select {
     white-space: pre-line;
 }
 
-div#loader { z-index: 99; position: absolute; left: 0; top: 0; bottom: 0; right: 0; background: #000; opacity: 0.8; filter: alpha(opacity=80); }
-#loader_progress { width:  calc(250px * var(--SCALE)); height: calc( 20px * var(--SCALE)); position: absolute; top: 50%; left: 50%; margin:  calc(128px * var(--SCALE)) 0 0 - calc(125px * var(--SCALE)); }
+#loader_progress { width:  25%; height: 30px; position: absolute; top: 50%; left: 37%; }
 
 
 .aircraft_table_header {
@@ -469,7 +483,7 @@ select.error, textarea.error, input.error {
     width: calc( 48px * var(--SCALE));
     height: calc( 48px * var(--SCALE));
     cursor: pointer;
-    background-image: url('images/settings-icon01.png');
+    background-image: url('images/settings-icon02.png');
     background-size: cover;
     background-repeat: no-repeat;
     margin-top: calc( 6px * var(--SCALE));
@@ -833,57 +847,53 @@ input{
 #replayBar {
   background: var(--BGCOLOR1);
   display: none;
-  width: flex;
-  padding-right: 30px;
+  width: calc(100% - 80px);
+  padding-right: 80px;
   position: absolute;
   height: 10px;
   bottom: 0%;
-  grid-template-columns: 1fr 1fr 1fr 3fr 1fr 1fr 1fr;
-  grid-template-rows: 20px 40px 20px;
+  grid-template-columns: 1fr 1.5fr 5fr 2fr;
+  grid-template-rows: 20px 40px 20px 20px;
   justify-items: center;
   align-items: center;
   grid-template-areas:
-    ". datehint timehint hours speedhint ."
-    "play date . minutes speed findhistory"
-    ". . showingdate showingdate showingdate ."
-    ". . . . . .";
+    "timezone dateHint timeHint speedHint"
+    "play datepicker hours speedSelect"
+    "loading . minutes ."
+    ". . . .";
+}
+
+#replayLoading {
+  grid-area: loading;
+}
+
+#replayTimeZone{
+  grid-area: timezone;
 }
 #replayPlay{
   grid-area: play;
 }
 #replayDatepicker{
-  grid-area: date;
+  grid-area: datepicker;
 }
 #hourSelect{
-  width: 80%;
+  width: 90%;
   grid-area: hours;
 }
 #minuteSelect{
-  width: 80%;
+  width: 90%;
   grid-area: minutes;
 }
-#speedSelect{
-  grid-area: speed;
-  width: 80%;
+#replaySpeedSelect{
+  grid-area: speedSelect;
+  width: 90%;
 }
-#findHistory{
-   grid-area: findhistory;
+#replayTimeHint{
+   grid-area: timeHint;
 }
-#replayBar{
-  grid-area: showingdate;
+#replayDateHint{
+  grid-area: dateHint;
 }
-#timeHint{
-   grid-area: timehint;
+#replaySpeedHint{
+  grid-area: speedHint;
 }
-#dateHint{
-  grid-area: datehint;
-}
-#speedHint{
-  grid-area: speedhint;
-}
-#replayShowing{
-    grid-area: showingdate;
-    justify-self:start;
-}
-
-

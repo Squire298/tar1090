@@ -9,10 +9,12 @@
 
     <meta name="viewport" content="user-scalable=no, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, minimal-ui" />
 
+    <!-- HEAD_ANCHOR -->
+
     <!-- CSS_ANCHOR -->
-    <link rel="stylesheet" href="libs/jquery-ui-1.12.1.min.css" type="text/css">
-    <link rel="stylesheet" href="libs/ol-643.css" type="text/css" />
-    <link rel="stylesheet" href="libs/ol-layerswitcher-370.css" type="text/css"/>
+    <link rel="stylesheet" href="libs/jquery-ui-1.13.2.min.css" type="text/css">
+    <link rel="stylesheet" href="libs/ol-6.14.1.css" type="text/css" />
+    <link rel="stylesheet" href="libs/ol-layerswitcher-3.8.3.css" type="text/css"/>
     <link rel="stylesheet" href="style.css" type="text/css" />
 
     <link rel="icon" type="image/png" href="images/tar1090-favicon.png">
@@ -21,10 +23,7 @@
   </head>
 
   <body>
-    <div id="loader">
-      <progress id="loader_progress"></progress>
-    </div>
-
+    <!-- BODY_ANCHOR -->
     <div id="layout_container">
 
       <div id="highlighted_infoblock">
@@ -77,7 +76,19 @@
             <div>
               <span class="identLarge" title="Callsign: Typically the air traffic control callsign or the aircraft's registration, as entered into the transponder by the pilot" id="selected_callsign">n/a</span>
             </div>
-            <div id="selected_icao" title="ICAO hex id: The aircraft's unique ICAO identification number shown in hexadecimal format as set in the aircrafts transponder (can be wrong, we will still display the data with the wrong hex)">
+            <div id="selected_icao" title="ICAO hex ID: The aircraft's unique ICAO identification number shown in hexadecimal format as set in the aircrafts transponder (can be wrong, we will still display the data with the wrong hex)">
+            </div>
+            <div style="display: none" id="creditsSelected">
+              <table class="infoSectionTable">
+                <tr>
+                  <td>
+                    <span class=credits-image></span>
+                  </td>
+                  <td>
+                    <span class=credits-text>adsbexchange.com</span>
+                  </td>
+                </tr>
+              </table>
             </div>
           </div>
           <div id=anon_mlat_info class="infoBlockSection hidden">
@@ -88,7 +99,7 @@
             </div>
             <div class="rSpacer"></div>
             <div class="infoHeading">
-              <span><a style="color: blue" target="_blank" href="https://discussions.flightaware.com/t/flightaware-mlat-network-announcement/18874" rel="noreferrer">Anonymized MLAT result</a></span>
+              <span><a class="link" target="_blank" href="https://discussions.flightaware.com/t/flightaware-mlat-network-announcement/18874" rel="noreferrer">Anonymized MLAT result</a></span>
             </div>
             <div class="rSpacer"></div>
             <div class="rSpacer"></div>
@@ -98,7 +109,7 @@
             <div class="rSpacer"></div>
             <div>
               <div class="infoHeading">
-                <span>No <a style="color: blue" target="_blank" href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address" rel="noreferrer">ICAO 24 bit address</a></span>
+                <span>No <a class="link" target="_blank" href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address" rel="noreferrer">ICAO 24 bit address</a></span>
               </div>
             </div>
           </div>
@@ -108,12 +119,12 @@
             </div>
             <div class="infoHeading">
               <span title="TIS-B link">
-                <a style="color: blue" target="_blank" href="https://www.skybrary.aero/index.php/Traffic_Information_Service_-_Broadcast_(TIS-B)" rel="noreferrer">ATC contact broadcast</a></span>
+                <a class="link" target="_blank" href="https://www.skybrary.aero/index.php/Traffic_Information_Service_-_Broadcast_(TIS-B)" rel="noreferrer">ATC contact broadcast</a></span>
             </div>
             <div class="rSpacer">
             </div>
             <div class="infoHeading">
-              This hex id is dynamic and can't be connected to a type or registration
+              This hex ID is dynamic and can't be connected to a type or registration
             </div>
             <div class="rSpacer">
             </div>
@@ -124,7 +135,7 @@
               <span>MLAT requires the contact to have a ModeS transponder and reception by 4 receivers</span>
             </div>
             <div class="infoHeading">
-              <span><a style="color: blue" target="_blank" href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address" rel="noreferrer">What is a hex id?</a></span>
+              <span><a class="link" target="_blank" href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address" rel="noreferrer">What is a hex ID?</a></span>
             </div>
           </div>
           <div id=reg_info class="infoBlockSection">
@@ -197,7 +208,7 @@
                   </div>
                 </td>
               </tr>
-              <tr id="photoLinkRow">
+              <tr id="photoLinkRow" class="hidden">
                 <td>
                   <div class="infoHeading">
                     <span class="link" id="selected_photo_link"></span>
@@ -260,55 +271,81 @@
               SPATIAL
             </div>
           </div>
-          <div class="infoBlockSection">
+          <div id=spatial_block class="infoBlockSection">
+            <table class="infoSectionTable">
+              <tr id=receiver_id_div class="infoBlockSection hidden">
+                <td>
+                  <span class="infoHeading" title="receiver id that supplied the position data">rId:</span>
+                  <span class="infoData" id="receiver_id">n/a</span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="infoHeading" title="The speed of the aircraft over the ground.">Groundspeed:</span>
+                  <span class="infoData" id="selected_speed1">n/a</span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="infoHeading" title="The uncorrected pressure-derived height of the aircraft above mean sea level (based on barometric pressure)">Baro. Altitude</span>:
+                  <span class="infoData" id="selected_altitude1"></span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="infoHeading" id="selected_altitude_geom1_title" title="The geometric GPS derived altitude referenced to WGS84 ellipsoid (or reference EGM96 when enabled in the settings)">WGS84 Altitude</span>:
+                  <span class="infoData" id="selected_altitude_geom1"></span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="infoHeading">
+                    <span title="Rate of climb or descent">Vert. Rate</span>:
+                  </div>
+                  <div class="infoData">
+                    <span id="selected_vert_rate">n/a</span>
+                  </div>
+                </td>
+              </tr>
 
-            <div>
-              <span class="infoHeading" title="The speed of the aircraft over the ground.">Speed:</span>
-              <span class="infoData" id="selected_speed1">n/a</span>
-            </div>
-            <div>
-              <span class="infoHeading" title="The uncorrected pressure-derived height of the aircraft above mean sea level (based on barometric pressure)">Altitude</span>:
-              <span class="infoData" id="selected_altitude1"></span>
-            </div>
-            <div>
-              <div class="infoHeading">
-                <span title="Rate of climb or descent">Vert. Rate</span>:
+              <div class="rSpacer">
               </div>
-              <div class="infoData">
-                <span id="selected_vert_rate">n/a</span>
-              </div>
-            </div>
 
-            <div class="rSpacer">
-            </div>
-
-            <div>
-              <div class="infoHeading">
-                <span title="Direction the aircraft is traveling over the ground">Track</span>:
-              </div>
-              <div class="infoData">
-                <span id="selected_track1">n/a</span>
-              </div>
-            </div>
-            <div>
-              <div class="infoHeading">
-                <span title="Latitude and longitude coordinates of the aircraft's last known position">Pos.:</span>
-              </div>
-              <div class="infoData">
-                <span id="selected_position">n/a</span>
-              </div>
-            </div>
-            <div>
-              <div class="infoHeading">
-                <span title="Distance of the aircraft from your ADS-B site at its last known position">Distance</span>:
-              </div>
-              <div class="infoData">
-                <span id="selected_sitedist2">n/a</span>
-              </div>
-            </div>
+              <tr>
+                <td>
+                  <div class="infoHeading">
+                    <span title="Direction the aircraft is traveling over the ground">Track</span>:
+                  </div>
+                  <div class="infoData">
+                    <span id="selected_track1">n/a</span>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="infoHeading">
+                    <span title="Latitude and longitude coordinates of the aircraft's last known position">Pos.:</span>
+                  </div>
+                  <div class="infoData">
+                    <span id="selected_position">n/a</span>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="infoHeading">
+                    <span title="Distance of the aircraft from your ADS-B site at its last known position">Distance</span>:
+                  </div>
+                  <div class="infoData">
+                    <span id="selected_sitedist2">n/a</span>
+                  </div>
+                </td>
+              </tr>
 
 
-          </div> <!-- SPATIAL -->
+            </table>
+          </div>
+              <!-- SPATIAL -->
 
           <div class="sectionTitle">
             <div class="section-title-content">
@@ -325,47 +362,49 @@
                 <span id="selected_source">n/a</span>
               </div>
             </div>
-            <div>
-              <div class="infoHeading">
-                <span title="Signal strength from this aircraft on your receiver in dBFS">RSSI</span>:
+            <div id="selected_showTrace_hide">
+              <div>
+                <div class="infoHeading">
+                  <span title="Signal strength from this aircraft on your receiver in dBFS">RSSI</span>:
+                </div>
+                <div class="infoData">
+                  <span id="selected_rssi1">n/a</span>
+                </div>
               </div>
-              <div class="infoData">
-                <span id="selected_rssi1">n/a</span>
+              <div>
+                <div class="infoHeading">
+                  <span title="Number of messages received from this aircraft per second (averaged over the last 2 update intervals)">Msg. Rate</span>:
+                </div>
+                <div class="infoData">
+                  <span id="selected_message_rate">n/a</span>
+                </div>
               </div>
-            </div>
-            <div>
-              <div class="infoHeading">
-                <span title="Number of messages received from this aircraft per second (averaged over the last 2 update intervals)">Msg. Rate</span>:
+              <div>
+                <div class="infoHeading">
+                  Messages:
+                </div>
+                <div class="infoData" id="selected_message_count">
+                </div>
               </div>
-              <div class="infoData">
-                <span id="selected_message_rate">n/a</span>
-              </div>
-            </div>
-            <div>
-              <div class="infoHeading">
-                Messages:
-              </div>
-              <div class="infoData" id="selected_message_count">
-              </div>
-            </div>
 
-            <div class="rSpacer">
-            </div>
+              <div class="rSpacer">
+              </div>
 
-            <div>
-              <div class="infoHeading">
-                <span title="Time in seconds since a position was received from this aircraft">Last Pos.</span>:
+              <div>
+                <div class="infoHeading">
+                  <span title="Time in seconds since a position was received from this aircraft">Last Pos.</span>:
+                </div>
+                <div class="infoData">
+                  <span id="selected_seen_pos">n/a</span>
+                </div>
               </div>
-              <div class="infoData">
-                <span id="selected_seen_pos">n/a</span>
-              </div>
-            </div>
-            <div>
-              <div class="infoHeading">
-                <span title="Time in seconds since a message was received from this aircraft">Last Seen</span>:
-              </div>
-              <div class="infoData">
-                <span id="selected_seen">n/a</span>
+              <div>
+                <div class="infoHeading">
+                  <span title="Time in seconds since a message was received from this aircraft">Last Seen</span>:
+                </div>
+                <div class="infoData">
+                  <span id="selected_seen">n/a</span>
+                </div>
               </div>
             </div>
           </div> <!-- Signal -->
@@ -489,10 +528,10 @@
             </div>
             <div>
               <div class="infoHeading">
-                <span title="The height of the aircraft (usually height above the WGS84 ellipsoid and derived from avionics which may be inertial or GNSS/satellite-based)">Geometric</span>:
+                <span id="selected_altitude_geom2_title" title="The geometric GPS derived altitude referenced to WGS84 ellipsoid (or reference EGM96 when enabled in the settings)">WGS84</span>:
               </div>
               <div class="infoData">
-                <span id="selected_altitude_geom">n/a</span>
+                <span id="selected_altitude_geom2">n/a</span>
               </div>
             </div>
             <div>
@@ -599,6 +638,11 @@
                 <span id="selected_category">n/a</span>
               </div>
             </div>
+            <div>
+              <div class="infoHeading">
+                <span id="selected_category_label">n/a</span>
+              </div>
+            </div>
           </div>
 
           <div class="sectionTitle">
@@ -654,12 +698,34 @@
           <div class="bottom-info-container">
             <div class="bottom-info-text"> Learn more about Mode S data type by hovering over each data label.</div>
           </div>
+          <div>
+              <div class="infoHeading">
+                  <span >Pos. epoch</span>:
+              </div>
+              <div class="infoData">
+                  <span id="selected_pos_epoch">n/a</span>
+              </div>
+          </div>
+
+          <div class="sectionTitle">
+            <div class="section-title-content">
+              Export KML
+            </div>
+          </div>
+          <button id="export_kml" onclick='exportKML("geom")'>geometric altitude (EGM96)</button>
+          <button id="export_kml" onclick='exportKML("geom_avg")'>baro + avg.(EGM96 - baro)</button>
+          <button id="export_kml" onclick='exportKML("baro")'>uncorrected pressure alt.</button>
 
         </div>
       </div> <!-- selected_infoblock -->
 
-      <div id="map_container">
-        <div id="map_canvas"></div>
+      <div id="map_container" style="background-color:#D2D2D2;">
+        <!-- MAP_CONTAINER_ANCHOR -->
+        <div id="map_canvas" style="background-color:#D2D2D2;">
+          <div id="loader">
+            <progress id="loader_progress"></progress>
+          </div>
+        </div>
 
         <div id="settings_infoblock">
           <div id="settings_close" class="settingsCloseBox"></div>
@@ -689,7 +755,7 @@
             </div>
             <div class="settingsOptionContainer">
               <div class="settingsCheckbox" id="blockedmlat_filter"></div>
-              <div class="settingsText">non-ICAO Targets (radar track / airframe unknown) </div>
+              <div class="settingsText">Non-ICAO Targets (radar track / airframe unknown) </div>
             </div>
           </div>
           <div id="settingsRight" class="settingsColumn">
@@ -716,10 +782,10 @@
         <div id="header_side" class="infoHeading">
           <div class="buttonContainer">
             <div id="toggle_sidebar_control">
-              <button id="toggle_sidebar_button" class="hide_sidebar sidebar_button " title="Toggle Sidebar"></button>
+              <button id="toggle_sidebar_button" class="show_sidebar sidebar_button " title="Toggle Sidebar"></button>
             </div>
             <div id="expand_sidebar_control">
-              <button id="expand_sidebar_button" class="sidebar_button" title="Expand Sidebar"></button>
+              <button id="expand_sidebar_button" class="sidebar_button" title="Expand Sidebar" style="display: none;"></button>
             </div>
             <div id="settingsCog" class="settingsCog"></div>
             <div id="L" title="Toggle (L)abels" class="button inActiveButton" onclick="toggleLabels();"><span class="buttonText">L</span></div>
@@ -730,7 +796,7 @@
             <div style="display: none" id="B" title="Toggle Map (B)rightness" class="button inActiveButton" onclick="toggles['MapDim'].toggle();"><span class="buttonText">B</span></div>
             <div class="buttonSpacer">
             </div>
-            <div id="V" title="Table: only show aircraft in current (V)iew" class="button inActiveButton" onclick="toggleTableInView();"><span class="buttonText">V</span></div>
+            <div style="display: none" id="V" title="Table: only show aircraft in current (V)iew" class="button inActiveButton" onclick="toggleTableInView();"><span class="buttonText">V</span></div>
             <div id="M" title="Toggle (M)ultiSelect" class="button inActiveButton" onclick="toggleMultiSelect();"><span class="buttonText">M</span></div>
             <div class="buttonSpacer">
             </div>
@@ -747,24 +813,23 @@
           <button id="altitude_chart_button"></button>
         </div>
         <div id="replayBar">
-
-          <p id="replayShowing">Showing:</p>
-          <button id="replayPlay">Play</button>
-          <p id="dateHint" class="hintText">Date:</p>
-          <input type="text" class="datepicker" id="replayDatepicker">
-          <p id="timeHint" class="hintText">Time:</p>
+          <button id="replayPlay" >Play</button>
+          <p id="replayDateHint" >Date:</p>
+          <input type="text" class="datepicker" id="replayDatepicker" >
+          <p id="replayTimeHint"  >Time:</p>
           <p id="hourSelect"></p>
           <p id="minuteSelect"></p>
-          <p id="timeZone">UTC</p>
-          <p id="speedHint" class="hintText">Speed:</p>
-          <p id="speedSelect"></p>
-          <button id="findHistory">Find History</button>
+          <p id="replayTimeZone">UTC</p>
+          <p id="replaySpeedHint">Speed:</p>
+          <p id="replaySpeedSelect"></p>
+          <p id="replayLoading"></p>
+          <p></p>
         </div> <!-- replayBar -->
 
       </div> <!-- map_container-->
 
       <div id="sidebar_container" style="display: none">
-        <div id="splitter" class="ui-resizable-handle ui-resizable-w"></div>
+        <div id="splitter" class="ui-resizable-handle ui-resizable-w" style="display: none;"></div>
         <div id="sidebar_canvas">
 
           <div id="sidebar-table">
@@ -780,12 +845,20 @@
                   <div>
                     <span class="largeText">Improve Coverage:<br><a class="largeText" target="_blank" href="https://adsbexchange.com/how-to-feed/">adsbexchange.com</a></span>
                   </div>
-                  <div class="rSpacer">
-                  </div>
-                  <div class="rSpacer">
-                  </div>
+                  <div class="rSpacer"></div>
+                  <div class="rSpacer"></div>
                   <div>
-                    <span class="largeText"><a class="largeText" target="_blank" href="https://adsbexchange.com/faq/">FAQ</a>&emsp;&emsp;<a class="largeText" target="_blank" href="https://adsbexchange.com/map-help/">Map Help</a></span>
+                    <span class="largeText">
+                      <a id="premium_text" class="largeText" href="https://store.adsbexchange.com/pages/subscription">Premium Login: no ads / Sat. Layer</a>
+                    </span>
+                  </div>
+                  <div class="rSpacer"></div>
+                  <div>
+                    <span class="largeText">
+                      <a class="largeText" target="_blank" href="https://adsbexchange.com/faq/">FAQ</a>
+                      &emsp;&emsp;
+                      <a class="largeText" target="_blank" href="https://adsbexchange.com/map-help/">Map Help</a>
+                    </span>
                   </div>
                   <div class="rSpacer">
                   </div>
@@ -816,6 +889,8 @@
               </tr>
             </table>
 
+            <!-- ABOVE_TABS_ANCHOR -->
+
             <div id="tabs" style="min-height: 10px; overflow: auto">
               <ul>
                 <li><a href="#tab-search">Search</a></li>
@@ -823,106 +898,89 @@
                 <li><a href="#tab-columns">Columns</a></li>
               </ul>
               <div id="tab-search">
-                <table cellpadding="0" cellspacing="0">
+                <table id="tab-search-table" cellpadding="0" cellspacing="0">
                   <tr>
                     <td>
                       <form id="search_form">
                         <div class="infoBlockTitleText">Search:</div>
-                        <input id="search_input" name="searchBox" type="text" class="searchInput" maxlength="8">
+                        <input id="search_input" name="searchBox" type="text" class="searchInput" maxlength="128" title="Searches on the hex ID, callsign, registration, and type.">
+                        <button class="formButton" type="submit">Search</button>
+                        <button class="formButton" type="button" id="search_clear_button">Clear Search</button>
                       </form>
                     </td>
-                    <td>&nbsp;</td>
+                  </tr>
+                  <tr>
                     <td>
                       <form id="jump_form">
-                        <div class="infoBlockTitleText">Jump to Airport:</div>
-                        <input id="jump_input" name="jumpBox" type="text" class="searchInput" maxlength="4">
+                        <div class="infoBlockTitleText">Jump to Airport or Latitude, Longitude:</div>
+                        <input id="jump_input" name="jumpBox" type="text" class="searchInput" maxlength="128" title="Search by airport code like KATL, ZBAA, or LAX">
+                        <button class="formButton" type="submit">Jump</button>
+                        <button class="formButton" type="button" id="jump_clear_button">Clear</button>
                       </form>
                     </td>
                   </tr>
                 </table>
+                <div class="warning" id="search_warning" style="display:none">
+                </div>
               </div>
               <div id="tab-filters">
-                <table cellpadding="0" cellspacing="0">
-                  <tr>
-                    <td>
-                      <form id="altitude_filter_form">
-                        <div class="infoBlockTitleText">Filter by altitude:</div>
-                        <input id="altitude_filter_min" name="minAltitude" type="text" class="altitudeFilterInput" maxlength="5">
-                        <label for="minAltitude" class="altitudeUnit"></label>
-                        <span> to </span>
-                        <input id="altitude_filter_max" name="maxAltitude" type="text" class="altitudeFilterInput" maxlength="5">
-                        <label for="maxAltitude" class="altitudeUnit"></label>
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="altitude_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
+                <table cellpadding="0" cellspacing="0" id="filterTable">
+                  <tbody>
+                    <tr>
+                      <td>
+                        <form id="altitude_filter_form">
+                          <div class="infoBlockTitleText">Filter by altitude:</div>
+                          <input id="altitude_filter_min" name="minAltitude" type="text" class="altitudeFilterInput" maxlength="5">
+                          <label for="minAltitude" class="altitudeUnit"></label>
+                          <span> to </span>
+                          <input id="altitude_filter_max" name="maxAltitude" type="text" class="altitudeFilterInput" maxlength="5">
+                          <label for="maxAltitude" class="altitudeUnit"></label>
+                          <button class="formButton" type="submit">Filter</button>
+                          <button class="formButton" id="altitude_filter_reset_button">Reset</button>
+                        </form>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <table style="width: 100%" cellpadding="0" cellspacing="0" id="filterTable2">
+                  <tbody>
 
-                  <tr>
-                    <td>
-                      <form id="callsign_filter_form">
-                        <div class="infoBlockTitleText">Filter by callsign or squawk:</div>
-                        <input id="callsign_filter" name="callsign" type="text" class="searchInput" maxlength="1024">
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="callsign_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
+                    <tr>
+                      <td>
+                        <form id="source_filter_form">
+                          <div class="infoBlockTitleText">Filter by source:</div>
+                          <table>
+                            <tr><td>
+                              <ol id="sourceFilter" class="buttonFilter"></ol>
+                            </td></tr>
+                            <tr><td>
+                              <button class="formButton" type="submit">Filter</button>
+                              <button class="formButton" id="source_filter_reset_button">Reset</button>
+                            </td></tr>
+                          </table>
+                        </form>
+                      </td>
+                    </tr>
 
-                  <tr>
-                    <td>
-                      <form id="type_filter_form">
-                        <div title="ICAO type code (A320, B738, etc.)" class="infoBlockTitleText">Filter by type code:</div>
-                        <input id="type_filter" name="type" type="text" class="searchInput" maxlength="1024">
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="type_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td>
-                      <form id="description_filter_form">
-                        <div title="ICAO type description (L/S/H Landplane/Seaplane/Helicopter 1/2/3/4 Number of P/T/J Reciprocating/Turboprop/Jet Engines" class="infoBlockTitleText">Filter by type description:</div>
-                        <input id="description_filter" name="description" type="text" class="searchInput" maxlength="1024">
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="description_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td>
-                      <form id="icao_filter_form">
-                        <div class="infoBlockTitleText">Filter by ICAO hex id:</div>
-                        <input id="icao_filter" name="description" type="text" class="searchInput" maxlength="1024">
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="icao_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td>
-                      <form id="source_filter_form">
-                        <div class="infoBlockTitleText">Filter by source:</div>
-                        <ol id="sourceFilter" class="buttonFilter"></ol>
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="source_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td>
-                      <form id="flag_filter_form">
-                        <div class="infoBlockTitleText">Filter by DB flags:</div>
-                        <ol id="flagFilter" class="buttonFilter"></ol>
-                        <button class="formButton" type="submit">Filter</button>
-                        <button class="formButton" id="flag_filter_reset_button">Reset</button>
-                      </form>
-                    </td>
-                  </tr>
+                    <tr>
+                      <td>
+                        <form id="flag_filter_form">
+                          <div class="infoBlockTitleText">Filter by DB flags:</div>
+                            <tr><td>
+                              <ol id="flagFilter" class="buttonFilter"></ol>
+                            </td></tr>
+                            <tr><td>
+                              <button class="formButton" type="submit">Filter</button>
+                              <button class="formButton" id="flag_filter_reset_button">Reset</button>
+                            </td></tr>
+                        </form>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <table cellpadding="0" cellspacing="0" id="filterTable3">
+                  <tbody>
+                  </tbody>
                 </table>
               </div>
               <div id="tab-columns">
@@ -935,6 +993,8 @@
 
             <div id="legend" class="legend">
             </div>
+
+            <!-- BELOW_LEGEND_ANCHOR -->
           </div>
 
         </div> <!-- sidebar_canvas -->
@@ -948,23 +1008,28 @@
       <span id="update_error_detail"></span>
     </div>
 
+    <div id="timers_paused" class="hidden error_box">
+      <span id="timers_paused_detail"></span>
+    </div>
+
     <div id="generic_error" class="hidden error_box">
       <span id="generic_error_detail"></span><br>
     </div>
 
-    <div id="js_error" class="hidden">
-    </div>
-
+    <div id="inaccurate_warning" class='identSmall hidden inaccurate_warning' ></div>
+    <div id="js_error" class="hidden"></div>
     <div id="container_splitter"></div>
 
     <script>let databaseFolder = "db2";</script>
-    <!-- JS_ANCHOR -->
-    <script src="libs/jquery-3.5.1.min.js"></script>
+    <!-- JS_ANCHOR1 -->
+    <script src="libs/jquery-3.6.1.min.js"></script>
     <script src="libs/elm-pep-01.js"></script>
-    <script src="libs/jquery-ui-1.12.1.min.js"></script>
-    <script src="libs/jquery.ui.touch-punch-1.12.1.js"></script>
-    <script src="libs/ol-custom010.js"></script>
+    <script src="libs/jquery-ui-1.13.2.min.js"></script>
+    <script src="libs/jquery.ui.touch-punch-1.0.8.js"></script>
+    <script src="libs/zstddec-tar1090-0.0.5.js"></script>
+    <script src="libs/ol-custom021.js"></script>
 
+    <!-- JS_ANCHOR2 -->
     <script src="early.js"></script>
 
     <script src="defaults.js"></script>
@@ -977,10 +1042,11 @@
     <script src="geomag2020.js"></script>
     <script src="markers.js"></script>
 
+    <!-- JS_ANCHOR3 -->
     <script src="planeObject.js"></script>
     <script src="script.js"></script>
 
-    <link rel="preload" as="image" href="images/sprites010.png">
+    <link rel="preload" as="image" crossOrigin="anonymous" href="images/sprites016.png">
 
   </body>
 </html>

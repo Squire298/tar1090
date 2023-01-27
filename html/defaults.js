@@ -17,7 +17,7 @@ let PlaneCountInTitle = false;
 let MessageRateInTitle = false;
 
 // -- Output Settings -------------------------------------
-// The DisplayUnits setting controls whether nautical (ft, NM, knots), 
+// The DisplayUnits setting controls whether nautical (ft, nmi, kt),
 // metric (m, km, km/h) or imperial (ft, mi, mph) units are used in the 
 // plane table and in the detailed plane info. Valid values are
 // "nautical", "metric", or "imperial".
@@ -54,14 +54,20 @@ let range_outline_dash = null; // null - solid line, [5, 5] - dashed line with 5
 let actual_range_outline_color = '#00596b';
 let actual_range_outline_width = 1.7;
 let actual_range_outline_dash = null; // null - solid line, [5, 5] - dashed line with 5 pixel lines and spaces in between
+//
+let actual_range_show = true;
 
 // which map is displayed to new visitors
 let MapType_tar1090 = "osm_adsbx";
+let defaultOverlays = [];
+let dwdLayers = 'dwd:RX-Produkt';
 
 // Default map dim state
 let MapDim = true;
 let mapDimPercentage = 0.45;
 let mapContrastPercentage = 0;
+
+let offlineMapDetail = -1;
 
 // -- Marker settings -------------------------------------
 
@@ -206,6 +212,15 @@ let pf_data = ["chunks/pf.json"]
 
 let mapOrientation = 0; // This determines what is up, normally north (0 degrees)
 
+// NO LONGER USED
+let utcTimes = null;
+
+// Use UTC for live labels
+let utcTimesLive = false;
+
+// Use UTC for historic labels
+let utcTimesHistoric = true;
+
 // Only display labels when zoomed in this far:
 let labelZoom = 0;
 let labelZoomGround = 14.8;
@@ -219,20 +234,22 @@ let uatNoTISB = false;
 let filterTISB = false;
 
 let flightawareLinks = false;
+let shareBaseUrl = false;
+let planespottersLinks = false;
 
 // show links to various registration websites (not all countries)
 let registrationLinks = true;
 
 // Filter implausible positions (required speed > Mach 2.5)
 // valid values: true, false, "onlyMLAT" ("" required)
-let positionFilter = true;
+let positionFilter = false;
 let positionFilterSpeed = 2.5; // in Mach
 // filter speed is based on transmitted ground speed if available
 // this factor is used to give the actual filter speed
 let positionFilterGsFactor = 2.2;
 let debugPosFilter = false;
 
-let altitudeFilter = true;
+let altitudeFilter = false;
 
 // time in seconds before an MLAT position is accepted after receiving a
 // more reliable position
@@ -265,13 +282,16 @@ let HideCols = [
 	"#lat",
 	"#lon",
 	"#data_source",
+	"#military",
 ]
 
 
 // show aircraft pictures
 let showPictures = true;
-// get pictures from planespotter API
+// get pictures from planespotters.net
 let planespottersAPI = true;
+// get pictures from planespotting.be
+let planespottingAPI = false;
 
 // show a link to jetphotos, only works if planespottersAPI is disabled
 let jetphotoLinks = false;
@@ -284,7 +304,11 @@ let showSil = false;
 // provide ZZZZ.png to be shown when the type is not known.
 // this feature is provided as is please don't expect tar1090's support for getting the pictures right.
 
+let labelsGeom = false; // labels: uses geometric altitude (WGS84 ellipsoid unless geomUseEGM is enabled
+let geomUseEGM = false; // use EGM96 for displaying geometric altitudes (extra load time!)
 
+let windLabelsSlim = false;
+let showLabelUnits = true;
 
 let wideInfoBlock = false;
 let baseInfoBlockWidth = 200;
@@ -302,6 +326,12 @@ let filterMaxRange = 1e8; // 100 000 km should include all planes on earth ;)
 
 let jaeroTimeout = 35 * 60; // in seconds
 
+let seenTimeout = 58; // in seconds
+let seenTimeoutMlat = 58; // in seconds
+
+let darkModeDefault = true; // turn on dark mode by default (change in browser possible)
+
+let tableInView = false; // only show aircraft in current view (V button)
 
 // legacy variables
 let OutlineMlatColor = null;
@@ -332,8 +362,13 @@ let tableColors = {
         other:   "#bcbcbc",
     },
     special: {
-        7500:      "#ff5555",
-        7600:      "#00ffff",
-        7700:      "#ffff00",
+        7500:      "#ff0000",
+        7600:      "#ff0000",
+        7700:      "#ff0000",
     }
 };
+
+let disableGeoLocation = false;
+
+// when data is available from both 1090 and 978, give some preference to the 978 data for up to X seconds old 978 data (set this to 15 or 30 for example)
+let prefer978 = 0;

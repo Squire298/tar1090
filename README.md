@@ -114,7 +114,21 @@ echo 'flightawareLinks = true;' | sudo tee -a /usr/local/share/tar1090/html/conf
 sudo sed -i -e 's?.*flightawareLinks.*?flightawareLinks = false;?' /usr/local/share/tar1090/html/config.js
 ```
 
-Then Ctrl-F5 to refresh the web interface in the browser.
+Then F5 to refresh the web interface in the browser.
+
+If your instance is not at /tar1090 you'll need to edit the config.js in the approppriate html folder, see "Multiple instances".
+
+## Enable Share links to ADSB-X
+```
+# ENABLE:
+sudo sed -i -e 's?.*shareBaseUrl.*?shareBaseUrl  = "https://globe.adsbexchange.com/";?' /usr/local/share/tar1090/html/config.js
+# ENABLE if the above doesn't work (updated from previous version)
+echo 'shareBaseUrl  = "https://globe.adsbexchange.com/";' | sudo tee -a /usr/local/share/tar1090/html/config.js
+# DISABLE:
+sudo sed -i -e 's?.*shareBaseUrl.*?shareBaseUrl = false;?' /usr/local/share/tar1090/html/config.js
+```
+
+If your instance is not at /tar1090 you'll need to edit the config.js in the approppriate html folder, see "Multiple instances".
 
 ## UAT receiver running dump978-fa and skyaware978:
 
@@ -157,21 +171,36 @@ sudo bash -c "$(wget -nv -O - https://github.com/wiedehopf/tar1090/raw/master/un
 
 ## Using the filters
 
-js regex can be used, some examples:
+js regex format, some basics (much more extensive issue available online on javascript regex syntax):
 
-- Filter by type code:
+- a single `.` is the wildcard for exactly one character
+- multiple patterns can be combined with or: `|`
+
+### Some examples of useful constructs:
+
+#### Filter by type code:
+
 ```
+B737 family: B73. (B73 and any character in the fourth position)
+A320 family: A32.
+B737-900 and B737 Max 9: B739|B39M
+737 family including max: B73.|B3.M
+B737 / A320 families: B73.|B3.M|A32.|A2.N
 Only A320 and B737 models: A32|B73
-Exclude: ^(?!A320)
-Exclude multiple: ^(?!(A32|B73))
+Exclude a certain type: ^(?!A320)
+Exclude multiple patterns: ^(?!(A32.|B73.))
 ```
-- Filter by type description:
+
+#### Filter by type description:
+
 ```
-Only helicopters: H
-Only planes (land): L
-Jets or turboprops: J|T
-Only piston engined: P
-Number of engines: 2
+Helicopters: H..
+Landplanes with 2 jet engines: L2J
+Landplanes with any number of piston engines: L.P
+Helicopters any number of turbin engines : H.T
+All turboprop powered things, including turbine helicopters: ..T
+Everything with 4 engines: .4.
+Everything with 2 3 and 4 engines: .2.|.3.|.4.
 ```
 
 ## Keyboard Shortcuts
@@ -219,6 +248,14 @@ Configuration for each instance will be separate, in the example the config file
 /etc/default/tar1090-combo
 /etc/default/tar1090-978
 /etc/default/tar1090-webroot
+```
+
+The config.js will also have another path, to edit each config:
+```
+sudo nano /usr/local/share/tar1090/html/config.js
+sudo nano /usr/local/share/tar1090/html-combo/config.js
+sudo nano /usr/local/share/tar1090/html-978/config.js
+sudo nano /usr/local/share/tar1090/html-webroot/config.js
 ```
 
 HTML folders will be:
@@ -298,11 +335,22 @@ To judge the actual range (/?pTracks, see next chapter), one needs to first know
 - Near the top of the page, an URL for the panorama is mentioned.
 - Replace the XXXXXX in the following command with the ID contained in your panorama URL, then run the command on your pi:
 ```
-sudo wget -nv -O /usr/local/share/tar1090/html/upintheair.json "http://www.heywhatsthat.com/api/upintheair.json?id=XXXXXXXX&refraction=0.25&alts=12192"
+sudo /usr/local/share/tar1090/getupintheair.sh XXXXX
 ```
 - You should now have a range outline for the theoretical range for aircraft at 40000 ft on your tar1090 map
 
 - It might be interesting to compare to http://192.168.x.yy/tar1090/?pTracks which will by default will display the last 8 hours of traces.
+
+- More options for loading multiple outlines and for a different instance
+```
+# load two outlines, 10000 ft and 40000 ft
+sudo /usr/local/share/tar1090/getupintheair.sh XXXXX 3048,12192
+# load a 10000 ft outline for the tar1090 instance located at /978
+sudo /usr/local/share/tar1090/getupintheair.sh XXXXX 3048 978
+
+# load a 40000 ft outline for the tar1090 instance located at /adsbx
+sudo /usr/local/share/tar1090/getupintheair.sh XXXXX 12192 adsbx
+```
 
 ## /tar1090/?pTracks
 
@@ -324,12 +372,22 @@ This is not in any way or form officially supported and you should consider it e
 To accomplish this, you need to use the dev branch of my readsb repository.
 (https://github.com/wiedehopf/adsb-wiki/wiki/Building-readsb-from-source#wiedehopfs-dev-branch)
 
-The following options need to be added to for example the decoder options in `/etc/default/readsb`
+The following command line options need to be added to for example the decoder options in `/etc/default/readsb`
 ```
 --write-json-globe-index --write-globe-history /var/globe_history --heatmap 30
 ```
 /var/globe_history needs to be a directory writeable by the user readsb.
 `sudo mkdir /var/globe_history` and `sudo chown readsb /var/globe_history` are useful for that.
+
+You should also download
+```
+wget -O /usr/local/share/tar1090/aircraft.csv.gz https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz
+```
+
+and add this command line option (for exaple via /etc/default/readsb):
+```
+--db-file /usr/local/share/tar1090/aircraft.csv.gz
+```
 
 You will also need to point tar1090 to /run/readsb in case you are using another dump1090/readsb.
 See the "multiple instances" readme section.
@@ -354,6 +412,11 @@ If you can't figure out how to make it work with the above information, please d
 I don't support this feature for the general user base.
 This information is only for people who could figure it out from the source code anyhow,
 so that they don't have to spend as much time figuring it out.
+
+If you're using --write-json-globe-index with tar1090, you might be interested in tar1090
+using the readsb API to get data, it's less requests and usually more efficient,
+for details see the file nginx-readsb-api.conf
+(this needs adding to your existing nginx tar1090 configuration, this is only for people who really know their stuff anyway)
 
 ## A separate instance with longer data retention for gauging range
 
@@ -430,13 +493,16 @@ If you still have history loading issues, get back to me via the github issues o
 
 Add readsb options:
 ```
---heatmap-dir /var/readsb_history --heatmap 30
+--heatmap-dir /var/globe_history --heatmap 30
 ```
 
 ## heatmap in conjunction with readsb wiedehopf fork --heatmap feature:
 
-First parameter after /tar1090 in the URL mandatory, rest are optional
-- maximum number of dots to draw: /?heatmap=200000
+```
+/tar1090/?heatmap=200000
+```
+Maximum number of dots to draw is the number after heatmap.
+Optional arguments that can be added to the URL:
 - duration in hours that shall be displayed: &heatDuration=48 (default: 24)
 - set the end of the duration 48 hours into the past: &heatEnd=48 (default:0)
 - radius of the dots: &heatRadius=2
@@ -446,6 +512,14 @@ First parameter after /tar1090 in the URL mandatory, rest are optional
 alternative display style: &realHeat
 - blurryness: &heatBlur=2
 - weight of each dot for the heatmap: &heatWeight=4
+
+## offline map
+
+<https://github.com/adsbxchange/wiki/wiki/tar1090-offline-map>
+
+## Uses this library for decompressing zstd
+
+<https://github.com/wiedehopf/zstddec-tar1090>
 
 ## NO WARRANTY - Excerpt from the License:
 

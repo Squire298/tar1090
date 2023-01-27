@@ -27,7 +27,7 @@ then
 fi
 
 # terminate with /
-command_package="git git/jq jq/"
+command_package="git git/jq jq/wget wget"
 packages=()
 
 while read -r -d '/' CMD PKG
@@ -46,8 +46,10 @@ if [[ -n "${packages[*]}" ]]; then
         exit 1
     fi
     echo "Installing required packages: ${packages[*]}"
-    apt-get update || true
-    apt-get install -y --no-install-suggests --no-install-recommends "${packages[@]}" || true
+    if ! apt-get install -y --no-install-suggests --no-install-recommends "${packages[@]}"; then
+        apt-get update || true
+        apt-get install -y --no-install-suggests --no-install-recommends "${packages[@]}" || true
+    fi
     hash -r || true
     while read -r -d '/' CMD PKG
     do
@@ -83,30 +85,33 @@ if (( $( { du -s "$ipath/git-db" 2>/dev/null || echo 0; } | cut -f1) > 150000 ))
 fi
 
 function getGIT() {
-    # getGIT $REPO $BRANCH $TARGET-DIR
-    if [[ -z "$1" ]] || [[ -z "$2" ]] || [[ -z "$3" ]]; then
-        echo "getGIT wrong usage, check your script or tell the author!" 1>&2
-        return 1
+    # getGIT $REPO $BRANCH $TARGET (directory)
+    if [[ -z "$1" ]] || [[ -z "$2" ]] || [[ -z "$3" ]]; then echo "getGIT wrong usage, check your script or tell the author!" 1>&2; return 1; fi
+    REPO="$1"; BRANCH="$2"; TARGET="$3"; pushd . >/dev/null
+    if cd "$TARGET" &>/dev/null && git fetch --depth 1 origin "$BRANCH" 2>/dev/null && git reset --hard FETCH_HEAD; then popd >/dev/null && return 0; fi
+    if ! cd /tmp || ! rm -rf "$TARGET"; then popd > /dev/null; return 1; fi
+    if git clone --depth 1 --single-branch --branch "$BRANCH" "$REPO" "$TARGET"; then popd > /dev/null; return 0; fi
+    rm -rf "$TARGET"; tmp=/tmp/getGIT-tmp-tar1090
+    if wget -O "$tmp" "$REPO/archive/refs/heads/$BRANCH.zip" && unzip "$tmp" -d "$tmp.folder" >/dev/null; then
+        if mv -fT "$tmp.folder/$(ls "$tmp.folder")" "$TARGET"; then rm -rf "$tmp" "$tmp.folder"; popd > /dev/null; return 0; fi
     fi
-    if ! cd "$3" &>/dev/null || ! git fetch --depth 2 origin "$2" || ! git reset --hard FETCH_HEAD; then
-        if ! rm -rf "$3" || ! git clone --depth 2 --single-branch --branch "$2" "$1" "$3"; then
-            return 1
-        fi
-    fi
-    return 0
+    rm -rf "$tmp" "$tmp.folder"; popd > /dev/null; return 1;
+}
+function revision() {
+    git rev-parse --short HEAD 2>/dev/null || echo "$RANDOM-$RANDOM"
 }
 
-if ! { [[ "$1" == "test" ]] && cd "$ipath/git-db" && git rev-parse; }; then
+if ! { [[ "$1" == "test" ]] && cd "$ipath/git-db"; }; then
     getGIT "$db_repo" "master" "$ipath/git-db" || true
 fi
 
-if ! cd $ipath/git-db || ! git rev-parse
+if ! cd $ipath/git-db
 then
     echo "Unable to download files, exiting! (Maybe try again?)"
     exit 1
 fi
 
-DB_VERSION=$(git rev-parse --short HEAD)
+DB_VERSION=$(revision)
 
 cd "$dir"
 
@@ -118,12 +123,12 @@ then
     cd /tmp/tar1090-test
     TAR_VERSION=$(date +%s)
 else
-    if ! getGIT "$repo" "master" "$ipath/git" || ! cd "$ipath/git" || ! git rev-parse
+    if ! getGIT "$repo" "master" "$ipath/git" || ! cd "$ipath/git"
     then
         echo "Unable to download files, exiting! (Maybe try again?)"
         exit 1
     fi
-    TAR_VERSION="$(git rev-parse --short HEAD)"
+    TAR_VERSION="$(revision)"
 fi
 
 
@@ -147,6 +152,9 @@ else
     echo --------------
     echo FATAL: could not find aircraft.json in any of the usual places!
     echo "checked these: /run/readsb /run/dump1090-fa /run/dump1090 /run/dump1090-mutability /run/adsbexchange-feed /run/skyaware978"
+    echo --------------
+    echo "You need to have a decoder installed first, readsb is recommended:"
+    echo "https://github.com/wiedehopf/adsb-scripts/wiki/Automatic-installation-for-readsb"
     echo --------------
     exit 1
 fi
@@ -187,7 +195,7 @@ fi
 
 
 # copy over base files
-cp install.sh uninstall.sh LICENSE README.md $ipath
+cp install.sh uninstall.sh getupintheair.sh LICENSE README.md $ipath
 cp default $ipath/example_config_dont_edit
 rm -f $ipath/default
 
@@ -208,7 +216,9 @@ do
     if [[ -z "$srcdir" || -z "$instance" ]]; then
         continue
     fi
-    TMP=$(mktemp -d -p "$ipath")
+    TMP="$ipath/.instance_tmp"
+    rm -rf "$TMP"
+    mkdir -p "$TMP"
     chmod 755 "$TMP"
 
     if [[ "$instance" != "tar1090" ]]; then
@@ -261,6 +271,21 @@ do
     # keep some stuff around
     mv "$html_path/config.js" "$TMP/config.js" 2>/dev/null || true
     mv "$html_path/upintheair.json" "$TMP/upintheair.json" 2>/dev/null || true
+
+    # in case we have offlinemaps installed, modify config.js
+    MAX_OFFLINE=""
+    for i in {0..15}; do
+        if [[ -d /usr/local/share/osm_tiles_offline/$i ]]; then
+            MAX_OFFLINE=$i
+        fi
+    done
+    if [[ -n "$MAX_OFFLINE" ]]; then
+        if ! grep "$TMP/config.js" -e '^offlineMapDetail.*' -qs &>/dev/null; then
+            echo "offlineMapDetail=$MAX_OFFLINE;" >> "$TMP/config.js"
+        else
+            sed -i -e "s/^offlineMapDetail.*/offlineMapDetail=$MAX_OFFLINE;/" "$TMP/config.js"
+        fi
+    fi
 
     cp "$ipath/customIcon.png" "$TMP/images/tar1090-favicon.png" &>/dev/null || true
 
@@ -322,6 +347,8 @@ do
     cp nginx.conf "$ipath/nginx-$service.conf"
 
     if [[ $lighttpd == yes ]]; then
+        # clean up broken symlinks in conf-enabled ...
+        for link in /etc/lighttpd/conf-enabled/*; do [[ -e "$link" ]] || rm -f "$link"; done
         if [[ "$otherport" != "done" ]]; then
             cp 95-tar1090-otherport.conf /etc/lighttpd/conf-available/
             ln -f -s /etc/lighttpd/conf-available/95-tar1090-otherport.conf /etc/lighttpd/conf-enabled/95-tar1090-otherport.conf
@@ -351,7 +378,7 @@ do
         if systemctl enable $service
         then
             echo "Restarting $service ..."
-            systemctl restart $service
+            systemctl restart $service || ! pgrep systemd
         else
             echo "$service.service is masked, could not start it!"
         fi
@@ -436,7 +463,7 @@ fi
 
 if systemctl show lighttpd 2>/dev/null | grep -qs -F -e 'UnitFileState=enabled' -e 'ActiveState=active'; then
     echo "Restarting lighttpd ..."
-    systemctl restart lighttpd
+    systemctl restart lighttpd || ! pgrep systemd
 fi
 
 echo --------------
